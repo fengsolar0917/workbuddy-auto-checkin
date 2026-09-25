@@ -15,10 +15,19 @@ One server simulates BOTH features on the same origin:
     POST /billing/meter/checkin
          -> flips today_checked_in=true (the "claim" write)
 
-  Buddy (领取礼物 + 派龙焰喵去旅行) on the growth-center page:
-    GET  /growth?gift=<done>&logged=<0|1>&failtravel=<0|1>
-         -> renders the page; clicking buttons drives a local state machine
-            (领取礼物 -> modal -> 关闭 -> 派猫猫旅行 -> 确定派出 -> 采风中)
+  Buddy (领取礼物 + 派当前展示的 Buddy 去旅行) on the growth-center page:
+    GET  /growth?gift=<done>&logged=<0|1>
+         -> renders the page with the current Buddy (龙焰喵 SSR) shown in the
+            hero; clicking buttons drives a local state machine
+            (领取礼物 -> modal -> 关闭; 派龙焰喵旅行 -> 选目的地 -> 确定派出 -> 采风中)
+    GET  /growth?dispatch=1
+         -> also renders a "派龙焰喵旅行" trigger button (models when the live
+            site exposes a manual dispatch button)
+    GET  /growth?traveling=1
+         -> renders the "采风中…距离回家" indicator instead (already traveling)
+    NOTE: the real WorkBuddy page does NOT have a static travel button — Buddy
+    travels automatically (daily). The script treats a missing button as a
+    safe 'skipped' (not an error).
 
 Run standalone:  python mock_server.py <port>
 """
@@ -61,28 +70,42 @@ GROWTH_TMPL = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <h1>成长计划</h1>
 <div id="page"></div>
 <script>
-const GIFT_DONE = {gift_done};
 const LOGGED = {logged};
-const FAILTRAVEL = {failtravel};
+const GIFT_DONE = {gift_done};
+const DISPATCH = {dispatch};       // '1' => 渲染"派<当前Buddy>旅行"按钮
+const TRAVELING = {traveling};     // '1' => 已在旅行(无按钮, 显示采风中)
+const FAILTRAVEL = {failtravel};   // '1' => 点确定派出后不出现"采风中"(模拟派发失败)
+const BUDDY = '龙焰喵';
 const page = document.getElementById('page');
+function hero() {{
+  return '<div id="hero">做任务攒能量，开盲盒解锁你的专属 Buddy '
+       + BUDDY + ' SSR</div>';
+}}
 function renderInitial() {{
   if (LOGGED) {{ page.innerHTML = '<button>立即登录</button>'; return; }}
-  if (GIFT_DONE) {{ page.innerHTML = '<button id="travel">派猫猫旅行</button>'; }}
-  else {{ page.innerHTML = '<button id="gift">领取礼物</button>'; }}
+  if (TRAVELING === '1') {{
+    page.innerHTML = hero() + '<div id="result">Buddy 正在 咖啡馆 采风中… 距离回家 02:00:00</div>';
+    return;
+  }}
+  var body = hero();
+  if (!GIFT_DONE) body += '<button id="gift">领取礼物</button>';
+  if (DISPATCH === '1') body += '<button id="travel">派'+BUDDY+'旅行</button>';
+  page.innerHTML = body;
 }}
 document.body.addEventListener('click', function(e) {{
   const t = e.target; if (!t) return;
   const txt = t.textContent || '';
   if (txt.includes('领取礼物')) {{
-    page.innerHTML = '<div id="giftModal">Buddy 满载而归啦～'
+    page.innerHTML = hero() + '<div id="giftModal">Buddy 满载而归啦～'
       + '<button id="pts">领取 9 积分</button>'
       + '<button id="close">关闭</button></div>';
   }} else if (txt.includes('领取 9 积分')) {{
     const b = document.getElementById('pts'); if (b) b.textContent = '已领取积分';
   }} else if (t.id === 'close') {{
-    page.innerHTML = '<button id="travel">派猫猫旅行</button>';
-  }} else if (txt.includes('派猫猫旅行') || txt.includes('派去旅行')) {{
-    page.innerHTML = '<div id="travelModal">想让 Buddy 今天去哪里逛逛？'
+    renderInitial();
+  }} else if (txt.includes('派') && txt.includes('旅行')) {{
+    window.LAST_TRAVELED = txt;
+    page.innerHTML = hero() + '<div id="travelModal">想让 Buddy 今天去哪里逛逛？'
       + '<button class="dest">咖啡馆</button>'
       + '<button class="dest">商场店铺</button>'
       + '<button class="dest">健身房</button>'
@@ -92,8 +115,8 @@ document.body.addEventListener('click', function(e) {{
     document.querySelectorAll('.dest').forEach(function(x){{x.style.color='';}});
     t.style.color = 'red';
   }} else if (txt.includes('确定派出') || txt.includes('确认派出') || txt === '派出') {{
-    if (!FAILTRAVEL) {{
-      page.innerHTML = '<div id="result">Buddy 正在 咖啡馆 采风中… 距离回家 02:00:00</div>';
+    if (FAILTRAVEL !== '1') {{
+      page.innerHTML = hero() + '<div id="result">Buddy 正在 咖啡馆 采风中… 距离回家 02:00:00</div>';
     }}
   }}
 }});
@@ -127,11 +150,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif parsed.path.startswith("/growth"):
             gift_done = qs.get("gift", [""])[0] == "done"
             logged = qs.get("logged", [""])[0] == "1"
+            dispatch = qs.get("dispatch", [""])[0] == "1"
+            traveling = qs.get("traveling", [""])[0] == "1"
             failtravel = qs.get("failtravel", [""])[0] == "1"
             body = GROWTH_TMPL.format(
                 gift_done=str(gift_done).lower(),
                 logged=str(logged).lower(),
-                failtravel=str(failtravel).lower(),
+                dispatch="'1'" if dispatch else "'0'",
+                traveling="'1'" if traveling else "'0'",
+                failtravel="'1'" if failtravel else "'0'",
             )
             _send(self, 200, body, "text/html; charset=utf-8")
         else:
@@ -169,7 +196,7 @@ if __name__ == "__main__":
     httpd = socketserver.TCPServer(("127.0.0.1", port), Handler)
     print("mock WorkBuddy server on http://127.0.0.1:%d" % port)
     print("  /workbench?ck=inactive|claimed|available_button|available_nobutton&btn=0|1&logged=0|1")
-    print("  /growth?gift=done&logged=1&failtravel=1")
+    print("  /growth?gift=done&logged=1&dispatch=1&traveling=1")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -1,6 +1,6 @@
 ---
 name: workbuddy-auto-checkin
-description: One-skill automation for the whole WorkBuddy 成长计划 (growth center) routine — daily check-in credits (每日签到 / 领取今日礼包), 领取礼物 (claim the 龙焰喵 Buddy gift incl. points), and 派龙焰喵去旅行 (dispatch the Buddy on a trip) — all in the background without launching the WorkBuddy desktop client. Use when the user wants to build, run, package, or distribute a reusable cross-platform background automation for any of these WorkBuddy growth-center tasks, or asks how to auto "每日签到" / "领取礼物" / "派龙焰喵去旅行" / "派猫猫旅行" unattended. Covers browser-profile reuse, environment auto-detection (OS + Edge/Chrome/Chromium), scheduled tasks (Windows Task Scheduler / macOS launchd / Linux cron), and safe degradation when inactive / already done / not logged in.
+description: One-skill automation for the whole WorkBuddy 成长计划 (growth center) routine — daily check-in credits (每日签到 / 领取今日礼包), 领取礼物 (claim the Buddy gift incl. points), and 派「当前展示的 Buddy」去旅行 (dispatch the Buddy currently shown on the page — WorkBuddy Buddies have NO level field, only rarity like SSR; so this skill dispatches the displayed Buddy, no hardcoded name) — all in the background without launching the WorkBuddy desktop client. Use when the user wants to build, run, package, or distribute a reusable cross-platform background automation for any of these WorkBuddy growth-center tasks, or asks how to auto "每日签到" / "领取礼物" / "派龙焰喵去旅行" / "派猫猫旅行" unattended. Covers browser-profile reuse, environment auto-detection (OS + Edge/Chrome/Chromium), current-Buddy detection, scheduled tasks (Windows Task Scheduler / macOS launchd / Linux cron), and safe degradation when inactive / already done / not logged in / travel button absent.
 agent_created: true
 ---
 
@@ -13,10 +13,17 @@ performs the **entire** growth-center routine the user originally asked for — 
 background, without starting the WorkBuddy desktop client:
 
 1. **打开成长计划页面** — `https://www.workbuddy.cn/profile/growth-center`
-2. **领取礼物** — claim the gift the 龙焰喵 Buddy brought back from its trip
+2. **领取礼物** — claim the gift the Buddy brought back from its trip
    (the "Buddy 报告" preview + redeemable points, e.g. 9 积分)
-3. **派龙焰喵去旅行** — dispatch the Buddy on a trip (pick a destination:
-   咖啡馆 / 商场店铺 / 健身房 / 古镇客栈; default 咖啡馆) and confirm 派出
+3. **派「当前展示的 Buddy」去旅行** — the script reads the Buddy name shown
+   on the page hero (e.g. 龙焰喵 SSR) and dispatches **that** one. Important:
+   WorkBuddy Buddies have **no "等级/level" field** — only rarity (SSR etc.) —
+   so "dispatch the highest-level pet" is not implementable; instead the skill
+   dispatches whatever Buddy is currently displayed. It picks a destination
+   (咖啡馆 / 商场店铺 / 健身房 / 古镇客栈; default 咖啡馆) and confirms 派出.
+   If the page has **no** travel button (the live site usually auto-travels
+   the Buddy daily, so the button is absent), the script logs and **skips
+   safely (exit 0)** instead of erroring.
 4. **每日签到领积分** — the daily check-in credits (第 1–6 天 100 积分/天,
    第 7 天 1000), a sibling action on the same account, driven by the same
    logged-in session
@@ -64,9 +71,19 @@ You do **not** have to close your daily browser. Pick the mode that fits:
    clicking the "领取今日礼包 / 签到" button on the workbench.
 2. The Buddy actions are triggered by clicking UI buttons on the growth-center
    page (no public claim API was observed): click **领取礼物** → modal
-   "Buddy 满载而归啦～" → click **领取 9 积分** → click **关闭** → button
-   becomes **派猫猫旅行** → click it → pick destination → click **确定派出**
-   → "Buddy 正在 XX 采风中… 距离回家 HH:MM:SS".
+   "Buddy 满载而归啦～" → click **领取 9 积分** → click **关闭** → (on the live
+   site the Buddy then appears traveling daily; a manual **派<宠物名>旅行**
+   button only appears when the site exposes one) → click it → pick destination
+   → click **确定派出** → "Buddy 正在 XX 采风中… 距离回家 HH:MM:SS".
+
+   **Current-Buddy dispatch (no level concept):** WorkBuddy Buddies have no
+   numeric level. The script reads the Buddy name from the page hero
+   (`detect_current_buddy()` in `scripts/auto_growth.py`, regex
+   `/专属 Buddy ([一-龥]+喵)/`), then clicks the travel trigger for that name
+   (`派龙焰喵旅行` etc.), falling back to generic `派猫猫旅行 / 派去旅行 …` text.
+   This keeps working on any account (the displayed name is never hardcoded).
+   If no travel button is present at all, the script reports it and **skips
+   safely (exit 0)** — it does NOT fail or invent a pet.
 3. Authentication for both is the same-site session cookie a logged-in browser
    carries automatically. Reusing a persistent browser profile inherits it.
 4. The script therefore launches the target browser headless with a persistent
@@ -218,7 +235,8 @@ python -m venv .venv && .venv/Scripts/pip install playwright
 ```
 
 It starts a mock server, runs the script in each scenario, and asserts the **exit
-code**. Last verified result (real headless Chromium, 15 scenarios):
+code** (and, for travel cases, that the right outcome appears in stdout).
+Last verified result (real headless Chromium, 18 scenarios):
 
 | Scenario | Setup | Expect | Got | Behavior |
 |---|---|---|---|---|
@@ -231,9 +249,12 @@ code**. Last verified result (real headless Chromium, 15 scenarios):
 | `ck_loggedout` | login page | 4 | 4 | ERROR "not logged in" |
 | `ck_claim_api` | no button + `--claim-api` | 0 | 0 | deterministic claim path |
 | `bd_full` | gift unclaimed | 0 | 0 | gift + travel |
-| `bd_gift_claimed` | button already "派猫猫旅行" | 0 | 0 | skips gift, travels |
+| `bd_gift_claimed` | button already gone | 0 | 0 | skips gift, travels |
 | `bd_loggedout` | login page | 4 | 4 | ERROR "not logged in" |
-| `bd_travel_fail` | click 派出 but no indicator | 5 | 5 | WARN (alert) |
+| `bd_travel_dispatch` | `dispatch=1` (button present) | 0 | 0 | dispatches current Buddy 龙焰喵 |
+| `bd_travel_skipped` | no travel button (live-like) | 0 | 0 | INFO "安全跳过" (not an error) |
+| `bd_travel_already` | `traveling=1` (采风中) | 0 | 0 | already-traveling skip |
+| `bd_travel_fail` | button + `failtravel=1` | 5 | 5 | WARN (alert) |
 | `bd_only_claim` | `--only-claim` | 0 | 0 | gift only |
 | `bd_only_travel` | `--only-travel` | 0 | 0 | travel only |
 | `bd_only_checkin` | `--only-checkin` | 0 | 0 | check-in only |
