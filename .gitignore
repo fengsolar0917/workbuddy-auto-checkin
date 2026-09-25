@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Runtime logs produced by auto_checkin.py
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
