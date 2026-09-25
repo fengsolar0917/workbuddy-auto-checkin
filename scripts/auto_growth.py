@@ -38,10 +38,21 @@ WorkBuddy 成长计划一站式自动化 (cross-platform / zero hardcoded paths)
 
 import argparse
 import json
+import os
 import platform
 import sys
 from datetime import datetime
 from pathlib import Path
+
+# Ensure sibling modules (api_backend, _vendor_buddy_station) are importable
+# no matter the current working directory (the script may be copied elsewhere).
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+try:
+    import api_backend  # API-first backend (default execution path)
+except ImportError:  # pragma: no cover - only when script is copied without companions
+    api_backend = None
 
 WORKBUDDY_BASE = "https://www.workbuddy.cn/"
 GROWTH_URL = WORKBUDDY_BASE + "profile/growth-center"
@@ -442,6 +453,86 @@ def run_tasks(page, args):
     return 0
 
 
+# ---------- API 后端（默认执行方案，UI 为回退） ----------
+# 旅行目的地名称 -> travel/status 的 location_id（与官方 4 个地点一致）
+DEST_ID = {"咖啡馆": 1, "商场店铺": 2, "健身房": 3, "古镇客栈": 4}
+
+
+def dest_to_id(dest):
+    return DEST_ID.get(dest or DEFAULT_DEST)
+
+
+def resolve_tasks(args):
+    """解析任务开关，返回 (do_checkin, do_gift, do_travel)。"""
+    skip_buddy = args.skip_buddy or args.only_checkin
+    skip_checkin = args.skip_checkin or args.only_claim or args.only_travel
+    do_gift = (not skip_buddy) and (not args.only_travel)
+    do_travel = (not skip_buddy) and (not args.only_claim)
+    do_checkin = not skip_checkin
+    return do_checkin, do_gift, do_travel
+
+
+def run_via_api(args):
+    """优先用 API 完成各任务。返回 (results, need_ui)。need_ui = 需回退 UI 的任务集合。"""
+    results = {}
+    need_ui = set()
+    do_checkin, do_gift, do_travel = resolve_tasks(args)
+
+    if api_backend is None:
+        token = None
+        log("[api] API 后端模块缺失，跳过 API 方案（将回退 UI）。")
+    else:
+        try:
+            token, domain = api_backend.get_credentials()
+        except Exception as e:
+            log("[api] 登录态/Token 不可用，API 方案跳过: %s" % e)
+            token = None
+
+    if not token:
+        # API 完全不可用：所有启用的任务都交给 UI
+        if do_checkin:
+            need_ui.add("checkin")
+        if do_gift:
+            need_ui.add("gift")
+        if do_travel:
+            need_ui.add("travel")
+        return results, need_ui
+
+    if do_checkin:
+        r = api_backend.api_checkin(token, domain)
+        log("[api][签到] %s — %s" % (r["outcome"], r["message"]))
+        results["checkin"] = r["outcome"]
+        if r["outcome"] == "fail":
+            need_ui.add("checkin")
+
+    if do_gift or do_travel:
+        r = api_backend.api_travel(token, location_id=dest_to_id(args.destination),
+                                    allow_claim=do_gift, allow_depart=do_travel)
+        log("[api][Buddy旅行] %s — %s" % (r["outcome"], r["message"]))
+        results["travel"] = r["outcome"]
+        if r["outcome"] == "fail":
+            need_ui.add("gift")
+            need_ui.add("travel")
+    return results, need_ui
+
+
+def run_via_ui(page, args, need_ui):
+    """对 need_ui 中的任务用 UI 补齐（回退路径）。返回退出码 0/4/5。"""
+    codes = []
+    if "checkin" in need_ui:
+        codes.append(run_checkin(page, args, prefix="[ck-ui] "))
+    if "gift" in need_ui or "travel" in need_ui:
+        codes.append(run_buddy(page, args, prefix="[bd-ui] ",
+                                do_gift=("gift" in need_ui), do_travel=("travel" in need_ui)))
+    if not codes:
+        return 0
+    if 5 in codes:
+        return 5
+    if 4 in codes:
+        return 4
+    return 0
+
+
 # ---------- entry ----------
 def main():
     reconfigure_stdout()
@@ -465,6 +556,8 @@ def main():
     parser.add_argument("--destination", choices=DESTINATIONS, default=DEFAULT_DEST,
                         help="Travel destination (default: 咖啡馆)")
     parser.add_argument("--claim-api", help="Explicit check-in claim endpoint to POST instead of clicking UI")
+    parser.add_argument("--backend", choices=["auto", "api", "ui"], default="auto",
+                        help="执行后端: auto(API优先, 失败回退UI, 默认) / api(仅API, 失败不回退) / ui(仅UI/Playwright)")
     # url overrides
     parser.add_argument("--url", default=None, help="Override base URL for BOTH growth and check-in pages")
     parser.add_argument("--growth-url", default=None, help="Growth-center URL override")
@@ -478,14 +571,40 @@ def main():
     args.growth_url = args.growth_url or (base + "profile/growth-center")
     args.checkin_url = args.checkin_url or base
 
-    # dependency check
+    # playwright 仅在真正需要启动浏览器（UI 回退 / ui 模式）时才导入
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        log("ERROR: Playwright not installed. Run:")
-        log("  python -m pip install playwright")
-        log("  python -m playwright install chromium   # only if no Edge/Chrome present")
-        return 2
+        sync_playwright = None
+
+    # ===== 后端选择：API 优先，UI 回退 =====
+    backend = "ui" if (args.open or args.dry_run) else args.backend
+
+    if backend == "api":
+        if api_backend is None:
+            log("ERROR: API 后端模块缺失（api_backend.py / _vendor_buddy_station.py），"
+                "且 api 模式不回退 UI。")
+            return 4
+        try:
+            _tok, _dom = api_backend.get_credentials()
+        except Exception as e:
+            log("[api] 登录态不可用且 api 模式不回退 UI: %s" % e)
+            return 4
+        _res, _ = run_via_api(args)
+        _code = 5 if (_res.get("checkin") == "fail" or _res.get("travel") == "fail") else 0
+        log("Done (API only). Exit code %d." % _code)
+        return _code
+
+    if backend == "auto":
+        _res, _need = run_via_api(args)
+        if not _need:
+            _code = 5 if (_res.get("checkin") == "fail" or _res.get("travel") == "fail") else 0
+            log("[auto] API 方案已完整完成全部任务，未启动浏览器。Exit %d." % _code)
+            return _code
+        log("[auto] API 未完成的任务: %s → 回退 UI（Playwright）。" % sorted(_need))
+        args._ui_need = _need
+    else:
+        args._ui_need = None
 
     env = detect_environment(args)
     if env is None:
@@ -504,6 +623,8 @@ def main():
         else:
             log("ERROR: --open is not meaningful with --cdp-url (browser already running).")
             return 2
+        if sync_playwright is None:
+            log("ERROR: Playwright 未安装。"); return 2
         with sync_playwright() as p:
             context = p.chromium.launch_persistent_context(**kwargs)
             page = context.pages[0] if context.pages else context.new_page()
@@ -527,6 +648,8 @@ def main():
             log("  channel     = %s" % (env.get("channel") or "bundled-chromium"))
         log("  growth_url  = %s" % args.growth_url)
         log("  checkin_url = %s" % args.checkin_url)
+        if sync_playwright is None:
+            log("ERROR: Playwright 未安装，UI 回退无法进行。"); return 2
         with sync_playwright() as p:
             if env["mode"] == "cdp":
                 try:
@@ -566,6 +689,8 @@ def main():
 
     # real run
     code = 0
+    if sync_playwright is None:
+        log("ERROR: Playwright 未安装，UI 回退无法进行。"); return 2
     with sync_playwright() as p:
         if env["mode"] == "cdp":
             try:
@@ -577,7 +702,8 @@ def main():
             try:
                 context = browser.contexts[0] if browser.contexts else browser.new_context()
                 page = context.new_page()
-                code = run_tasks(page, args)
+                code = (run_via_ui(page, args, args._ui_need)
+                    if getattr(args, "_ui_need", None) else run_tasks(page, args))
             finally:
                 try:
                     page.close()  # only our tab; user's browser keeps running
@@ -606,7 +732,8 @@ def main():
             return 3
         try:
             page = context.pages[0] if context.pages else context.new_page()
-            code = run_tasks(page, args)
+            code = (run_via_ui(page, args, args._ui_need)
+                    if getattr(args, "_ui_need", None) else run_tasks(page, args))
         finally:
             try:
                 context.close()

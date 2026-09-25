@@ -99,6 +99,7 @@ def main():
 
             cmd = [
                 str(VENV_PY), str(script_copy),
+                "--backend", "ui",
                 "--growth-url", growth_url,
                 "--checkin-url", checkin_url,
                 "--bot-profile-dir", str(bot_dir),

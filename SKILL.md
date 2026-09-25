@@ -1,6 +1,16 @@
 ---
 name: workbuddy-auto-checkin
-description: One-skill automation for the whole WorkBuddy 成长计划 (growth center) routine — daily check-in credits (每日签到 / 领取今日礼包), 领取礼物 (claim the Buddy gift incl. points), and 派「当前展示的 Buddy」去旅行 (dispatch the Buddy currently shown on the page — WorkBuddy Buddies have NO level field, only rarity like SSR; so this skill dispatches the displayed Buddy, no hardcoded name) — all in the background without launching the WorkBuddy desktop client. Use when the user wants to build, run, package, or distribute a reusable cross-platform background automation for any of these WorkBuddy growth-center tasks, or asks how to auto "每日签到" / "领取礼物" / "派龙焰喵去旅行" / "派猫猫旅行" unattended. Covers browser-profile reuse, environment auto-detection (OS + Edge/Chrome/Chromium), current-Buddy detection, scheduled tasks (Windows Task Scheduler / macOS launchd / Linux cron), and safe degradation when inactive / already done / not logged in / travel button absent.
+description: One-skill automation for the whole WorkBuddy 成长计划 (growth center) routine — daily check-in credits (每日签到 / 领取今日礼包), 领取礼物 (claim the Buddy gift incl. points), and 派「当前展示的 Buddy」去旅行 (dispatch the Buddy currently shown on the page — WorkBuddy Buddies have NO level field, only rarity like SSR; so this skill dispatches the displayed Buddy, no hardcoded name) — all in the background without launching the WorkBuddy desktop client. It runs
+**API-first** (direct official REST calls — no browser needed) and **automatically
+falls back to a Playwright/UI path only for the specific tasks the API could not
+complete**, so most scheduled runs need no browser at all. Use when the user wants
+to build, run, package, or distribute a reusable cross-platform background
+automation for any of these WorkBuddy growth-center tasks, or asks how to auto
+"每日签到" / "领取礼物" / "派龙焰喵去旅行" / "派猫猫旅行" unattended. Covers an
+optional browser-profile fallback, environment auto-detection (OS +
+Edge/Chrome/Chromium), current-Buddy detection, scheduled tasks (Windows Task
+Scheduler / macOS launchd / Linux cron), and safe degradation when inactive /
+already done / not logged in / travel button absent / API unavailable.
 agent_created: true
 ---
 
@@ -100,11 +110,59 @@ You do **not** have to close your daily browser. Pick the mode that fits:
 > Reference detail (observed endpoints, response shape, DOM flow, caveats) lives
 > in `references/api_notes.md`. Load it only when debugging.
 
+## Dual backend: API-first, UI fallback (the default)
+
+Starting with this skill, the **default** execution path is the **API backend**
+(`--backend auto` → API first, then UI only for what API could not do):
+
+1. **API backend (no browser).** `scripts/api_backend.py` calls the official
+   WorkBuddy REST endpoints directly:
+   - `POST /v2/billing/meter/checkin-activity-status` (read sign-in status)
+   - `POST /v2/billing/meter/daily-checkin` (idempotent daily check-in;
+     `code 10001` = already done)
+   - `GET /v2/activity/growth/buddy/info` (current Buddy name/rarity)
+   - Travel on `www.workbuddy.cn` **without `/v2`**:
+     `GET /activity/growth/buddy/travel/status`,
+     `POST /activity/growth/buddy/travel/depart` (`{"location_id":N}`),
+     `POST /activity/growth/buddy/travel/claim` (`{}`).
+   The heavy lifting — decrypting the WorkBuddy `accessToken` (which since
+   WorkBuddy 3.1.0 is an **AES-256-GCM envelope** in `workbuddy-desktop.info`,
+   not plaintext JWT) and discovering the decryption key via Windows DPAPI or
+   scanning the running `WorkBuddy.exe` process memory — is **vendored as-is**
+   from the community skill **totorosir-workbuddy-score v3.1.2 (MIT-0)** into
+   `scripts/_vendor_buddy_station.py`. We do not hand-edit that file; to upgrade,
+   re-vendor the whole module. The API path needs **only Python stdlib** —
+   no Playwright, no browser — which is why it is the default for scheduled runs.
+2. **UI fallback (Playwright).** When the API backend returns *no token*,
+   *auth failure*, or *a genuine API error*, the failed task(s) are retried
+   through the original browser/Playwright path (in-page `fetch` with the
+   same-site session cookie). A task only falls back if it actually failed;
+   tasks the API already completed are not repeated.
+
+Backends are selectable with `--backend`:
+
+| `--backend` | Behaviour |
+|---|---|
+| `auto` | **Default.** API first; per-task UI fallback only for failed tasks. Most runs need no browser. |
+| `api`  | API only; on any failure it does **not** fall back to UI (returns a non-zero code to alert you). |
+| `ui`   | Original Playwright/UI path only (forces a browser launch). Use for debugging the UI flow. |
+
+> **When does UI fallback actually trigger?** Only when the token can't be
+> obtained (e.g. WorkBuddy desktop not installed / login file absent), the
+> request 401s, or the endpoint errors. A normal, healthy account on WorkBuddy
+> 3.1.x will complete entirely via API and never launch a browser.
+
 ## Workflow
 
 ### Step 1 — Install dependencies (on any machine)
 
-The only runtime dependency is Playwright's Python package.
+**For the default API-first path you need nothing but Python 3.8+ (standard
+library only).** No Playwright, no browser. The script decrypts your local
+WorkBuddy login token and calls the REST endpoints directly.
+
+**Playwright is only needed for the UI fallback** (`--backend ui`, or when the
+API path must fall back). Install it and a browser only if you want the
+Playwright fallback available:
 
 ```bash
 python -m pip install playwright
@@ -154,6 +212,7 @@ The script auto-detects OS, browser, user-data dir, and profile. Useful flags:
 | `--only-travel` | Only dispatch Buddy travel |
 | `--destination {咖啡馆,商场店铺,健身房,古镇客栈}` | Travel destination (default 咖啡馆) |
 | `--claim-api PATH` | Explicit check-in claim endpoint to POST instead of clicking UI |
+| `--backend {auto,api,ui}` | Execution backend: `auto` (API-first + UI fallback, **default**) / `api` (API only) / `ui` (Playwright only) |
 | `--browser edge\|chrome\|chromium` | Force a browser (else auto-detect) |
 | `--user-data-dir PATH` | Explicit User Data dir (folder containing `Default`) |
 | `--profile NAME` | Profile name (default `Default`) |
@@ -227,9 +286,22 @@ To ship this skill to another machine or publish it:
 
 ## Local testing (no real account / network)
 
-The skill ships a self-test in `tests/` that runs `auto_growth.py` against a
-local mock of WorkBuddy (check-in endpoints + growth-center page). It uses
-Playwright's bundled Chromium, so install that first (Step 1). Then:
+The skill ships two test layers in `tests/`:
+
+**A. API backend unit tests (no browser, no network — fast).** These mock the
+vendored REST call and verify the API-first / UI-fallback decision for every
+combination (success, already-done, genuine error, no-credentials, missing
+module). Pure stdlib + the vendored module:
+
+```bash
+python tests/test_api_backend.py
+# => 7 passed, 0 failed
+```
+
+**B. UI regression suite (real headless Chromium).** Runs `auto_growth.py`
+against a local mock of WorkBuddy (check-in endpoints + growth-center page) and
+asserts the **exit code** per scenario. Pinned to `--backend ui` so it never
+touches the real API. Needs Playwright + Chromium (Step 1):
 
 ```bash
 cd tests
@@ -238,9 +310,7 @@ python -m venv .venv && .venv/Scripts/pip install playwright
 .venv/Scripts/python run_growth_tests.py
 ```
 
-It starts a mock server, runs the script in each scenario, and asserts the **exit
-code** (and, for travel cases, that the right outcome appears in stdout).
-Last verified result (real headless Chromium, 18 scenarios):
+Last verified result (real headless Chromium, 18 scenarios, `--backend ui`):
 
 | Scenario | Setup | Expect | Got | Behavior |
 |---|---|---|---|---|
@@ -272,6 +342,11 @@ Last verified result (real headless Chromium, 18 scenarios):
   (`--user-data-dir`) reuses your live profile and then needs that browser closed.
 - **Already-done is a safe skip (exit 0).** Already-claimed check-in / already
   gifted / already-traveling are detected and skipped — never double-claims.
+- **API token is read-only & scoped.** The API backend only *decrypts* the
+  on-disk WorkBuddy login token (never writes/exfiltrates it) and calls the
+  authorized check-in + Buddy-travel endpoints — no exchange / lottery / other
+  write calls. The decryption logic is vendored from totorosir-workbuddy-score
+  v3.1.2 (MIT-0) and kept untouched in `_vendor_buddy_station.py`.
 - **Profile lock (mode 3 only):** reusing your real Default profile while that
   browser is running fails. Prefer CDP mode or the default bot profile instead.
 - **Activity must be live.** When `checkin-status` returns `active:false` the

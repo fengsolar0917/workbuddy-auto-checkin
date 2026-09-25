@@ -8,7 +8,77 @@ document exists only to help debug.
 All requests go to the same origin `https://www.workbuddy.cn` and rely on the
 same-site session cookie. No separate Bearer token was observed.
 
-## Endpoints seen during workbench / growth-center load
+---
+
+## API backend (the default `--backend auto` path)
+
+The bundled API backend in `scripts/api_backend.py` (thin wrapper over the
+vendored `scripts/_vendor_buddy_station.py`, from community skill
+**totorosir-workbuddy-score v3.1.2, MIT-0**) calls the **official REST API**
+directly — no browser, no Playwright, stdlib-only. It needs the WorkBuddy
+**desktop login state**, which lives at:
+
+```
+C:\Users\<user>\AppData\Local\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info
+```
+
+### Login token (since WorkBuddy 3.1.0: AES-256-GCM envelope, NOT plaintext JWT)
+
+The `accessToken` field in that file is now an envelope:
+
+```json
+{ "$wbEncrypted": 1, "envelope": "<base64 aes-256-gcm blob>" }
+```
+
+The envelope key is derived from `atRestSecretKey` (a 44-char base64 value)
+via SHA-256, and `atRestSecretKey` itself is discovered by one of:
+- **Windows DPAPI** — unprotecting the `Local State` blob (Chromium-style
+  `os_crypt`-like protection), or
+- **scanning the running `WorkBuddy.exe` process memory** for the key material.
+
+The vendored module does the read-side decryption only (it re-implements the
+client's envelope unpacking). This is why the skill works **without launching
+the WorkBuddy client** — it reads and decrypts the on-disk token.
+
+> Verification note (2026-09-25): a community comment claimed the skill
+> "breaks after a WorkBuddy upgrade". That referred to **pre-3.1.0** versions
+> that assumed a plaintext JWT; on **WorkBuddy 5.6.2.0 / token envelope
+> 3.1.2** the vendored module resolves the token correctly and the API path
+> works. The **Playwright/UI path** is the more fragile one (DOM/text changes).
+
+### REST endpoints used by the API backend
+
+All calls carry the decrypted `accessToken` as a Bearer token.
+
+| Method | Path (domain) | Purpose |
+|---|---|---|
+| POST | `/v2/billing/meter/checkin-activity-status` (www.workbuddy.cn) | Daily check-in **status** |
+| POST | `/v2/billing/meter/daily-checkin` (www.workbuddy.cn) | Daily check-in **claim** — idempotent; `code 10001` = already done today |
+| GET  | `/v2/activity/growth/buddy/info` (www.workbuddy.cn) | Current Buddy name / rarity |
+| GET  | `/activity/growth/buddy/travel/status` (**www.workbuddy.cn, no `/v2`**) | Travel state (idle / traveling / arrived + daily_limit_reached) |
+| POST | `/activity/growth/buddy/travel/depart` (no `/v2`) | Depart: body `{"location_id": N}` (1=咖啡馆 2=商场店铺 3=健身房 4=古镇客栈) |
+| POST | `/activity/growth/buddy/travel/claim` (no `/v2`) | Claim returned-travel reward: body `{}` |
+
+Travel state machine: `idle → depart → traveling → arrived → claim → idle`.
+The API travel call is a no-op (and reported as success) when already in the
+right state, so it is safe to run every day.
+
+### API-first, UI-fallback decision
+
+`auto_growth.py` runs `run_via_api()` first. For each enabled task
+(checkin / gift / travel) an `outcome` of `fail` (no token, auth error, API
+exception) adds that task to `need_ui`. Only those tasks are then retried via
+the Playwright/UI path (`run_via_ui`). Already-completed tasks are never
+repeated. `--backend api` disables the fallback (failures return non-zero);
+`--backend ui` forces the original browser path.
+
+## Endpoints seen during workbench / growth-center load (UI / in-page-fetch path)
+
+> These are the endpoints hit by the **Playwright/UI path** (`--backend ui` /
+> fallback), where the script does `page.evaluate(fetch(...))` inside an
+> already-logged-in page (same-site cookie). They are **different** from the
+> API backend's `/v2/...` REST calls documented above (Bearer-token, no
+> browser). Keep both in mind when debugging either path.
 
 | Method | Path | Purpose |
 |---|---|---|
