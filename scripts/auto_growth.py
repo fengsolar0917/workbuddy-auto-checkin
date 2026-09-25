@@ -55,10 +55,12 @@ CLAIM_TEXTS = ["领取今日礼包", "每日签到", "去签到", "签到", "领
 GIFT_CLAIM_TEXTS = ["领取礼物", "收下礼物", "领取"]
 GIFT_POINTS_TEXTS = ["领取", "收下", "开心收下"]
 GIFT_CLOSE_TEXTS = ["关闭", "完成", "收下", "好的"]
-# 派去旅行: 触发按钮文案候选. 优先用「派{当前Buddy名}旅行」(从页面解析),
-# 以下为兜底/历史文案. 注意: WorkBuddy 当前版本主卡上通常没有常驻旅行按钮
-# (Buddy 多为每日自动出行); 找不到时安全跳过, 不报错.
-TRAVEL_BTN_TEXTS = ["派猫猫旅行", "派龙焰喵旅行", "派去旅行", "去旅行", "派它去旅行", "派喵去旅行"]
+# 派去旅行: 触发按钮文案候选. 优先用「派{当前Buddy名}去旅行 / 派{当前Buddy名}旅行」
+# (名字从页面解析, 不写死). 以下为兜底/历史文案.
+# 说明: 出发按钮只在「Buddy 在家、待派出」状态出现; 正在旅行或待领礼物时不出现,
+# 此时脚本安全跳过 (exit 0), 不代表失败. (用户每日手动派, 并非自动出行)
+TRAVEL_BTN_TEXTS = ["派龙焰喵去旅行", "派龙焰喵旅行", "派猫猫旅行", "派去旅行",
+                     "去旅行", "派它去旅行", "派喵去旅行"]
 TRAVEL_CONFIRM_TEXTS = ["确定派出", "确认派出", "派出", "确定"]
 TRAVELING_INDICATORS = ["采风", "距离回家", "出发啦", "正在外面", "已出发"]
 DESTINATIONS = ["咖啡馆", "商场店铺", "健身房", "古镇客栈"]
@@ -336,8 +338,9 @@ def dispatch_travel(page, args, prefix):
     返回:
       'dispatched'  —— 成功派出
       'already'     —— 已在旅行 (页面有'采风中/距离回家'等提示)
-      'skipped'     —— 页面上没有派去旅行的按钮 (当前账号的 Buddy 多为每日自动
-                       出行 / 冷却中). 这是正常态, 不是错误, 退出码按 0 处理.
+      'skipped'     —— 页面上没有派去旅行的按钮 (Buddy 正在旅行或待领礼物,
+                       出发按钮仅在 Buddy 在家时出现). 这是正常态, 不是错误,
+                       退出码按 0 处理.
       'failed'      —— 点到了按钮但确认/派出行提示缺失 (UI 可能已变)
     """
     name = detect_current_buddy(page)
@@ -346,9 +349,10 @@ def dispatch_travel(page, args, prefix):
     else:
         log("%s[travel] could not read current Buddy name from page." % prefix)
 
-    # 触发按钮候选: 优先 '派{name}旅行', 再兜底通用文案
+    # 触发按钮候选: 优先 '派{name}去旅行' / '派{name}旅行', 再兜底通用文案
     candidates = []
     if name:
+        candidates.append("派%s去旅行" % name)
         candidates.append("派%s旅行" % name)
     candidates += TRAVEL_BTN_TEXTS
 
@@ -358,7 +362,7 @@ def dispatch_travel(page, args, prefix):
             log("%s[travel] already traveling (indicator found). Skipping." % prefix)
             return "already"
         log("%s[travel] INFO: no '派去旅行' button on page "
-            "(当前账号的 Buddy 可能为每日自动出行/处于冷却). 安全跳过, 不报错." % prefix)
+            "(Buddy 正在旅行或待领礼物, 出发按钮仅在在家时出现). 安全跳过, 不报错." % prefix)
         return "skipped"
 
     page.wait_for_timeout(2500)
