@@ -5,7 +5,10 @@ __pycache__/
 .venv/
 venv/
 
-# Runtime logs produced by auto_checkin.py
+# Git metadata (don't ship the repo's .git)
+.git/
+
+# Runtime logs produced by auto_growth.py
 *.log
 
 # OS
