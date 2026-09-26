@@ -463,20 +463,24 @@ def dest_to_id(dest):
 
 
 def resolve_tasks(args):
-    """解析任务开关，返回 (do_checkin, do_gift, do_travel)。"""
+    """解析任务开关，返回 (do_checkin, do_gift, do_travel, do_redeem, do_lottery, do_makeup)。"""
     skip_buddy = args.skip_buddy or args.only_checkin
     skip_checkin = args.skip_checkin or args.only_claim or args.only_travel
     do_gift = (not skip_buddy) and (not args.only_travel)
     do_travel = (not skip_buddy) and (not args.only_claim)
     do_checkin = not skip_checkin
-    return do_checkin, do_gift, do_travel
+    # 连登奖励组（默认全开；getattr 兼容测试用的简易 Namespace）
+    do_redeem = not getattr(args, "no_redeem", False)
+    do_lottery = not getattr(args, "no_lottery", False)
+    do_makeup = not getattr(args, "no_makeup", False)
+    return do_checkin, do_gift, do_travel, do_redeem, do_lottery, do_makeup
 
 
 def run_via_api(args):
     """优先用 API 完成各任务。返回 (results, need_ui)。need_ui = 需回退 UI 的任务集合。"""
     results = {}
     need_ui = set()
-    do_checkin, do_gift, do_travel = resolve_tasks(args)
+    do_checkin, do_gift, do_travel, do_redeem, do_lottery, do_makeup = resolve_tasks(args)
 
     if api_backend is None:
         token = None
@@ -513,6 +517,14 @@ def run_via_api(args):
         if r["outcome"] == "fail":
             need_ui.add("gift")
             need_ui.add("travel")
+
+    # 连登奖励组（兑换/抽奖/补签）：仅 API 可完成（UI 无对应页面自动化），
+    # 失败不回退 UI，只如实报告（退出码按 5 警告处理）。
+    if do_redeem or do_lottery or do_makeup:
+        r = api_backend.api_streak_all(token, do_redeem=do_redeem,
+                                        do_lottery=do_lottery, do_makeup=do_makeup)
+        log("[api][连登奖励] %s — %s" % (r["outcome"], r["message"]))
+        results["streak"] = r["outcome"]
     return results, need_ui
 
 
@@ -556,6 +568,9 @@ def main():
     parser.add_argument("--destination", choices=DESTINATIONS, default=DEFAULT_DEST,
                         help="Travel destination (default: 咖啡馆)")
     parser.add_argument("--claim-api", help="Explicit check-in claim endpoint to POST instead of clicking UI")
+    parser.add_argument("--no-redeem", action="store_true", help="不做连登里程碑自动兑换 (7/14/28天)")
+    parser.add_argument("--no-lottery", action="store_true", help="不做连登奖励自动抽奖")
+    parser.add_argument("--no-makeup", action="store_true", help="不做自动补签（默认按需限量使用补签卡）")
     parser.add_argument("--backend", choices=["auto", "api", "ui"], default="auto",
                         help="执行后端: auto(API优先, 失败回退UI, 默认) / api(仅API, 失败不回退) / ui(仅UI/Playwright)")
     # url overrides
@@ -591,14 +606,14 @@ def main():
             log("[api] 登录态不可用且 api 模式不回退 UI: %s" % e)
             return 4
         _res, _ = run_via_api(args)
-        _code = 5 if (_res.get("checkin") == "fail" or _res.get("travel") == "fail") else 0
+        _code = 5 if ("fail" in (_res.get("checkin"), _res.get("travel"), _res.get("streak"))) else 0
         log("Done (API only). Exit code %d." % _code)
         return _code
 
     if backend == "auto":
         _res, _need = run_via_api(args)
         if not _need:
-            _code = 5 if (_res.get("checkin") == "fail" or _res.get("travel") == "fail") else 0
+            _code = 5 if ("fail" in (_res.get("checkin"), _res.get("travel"), _res.get("streak"))) else 0
             log("[auto] API 方案已完整完成全部任务，未启动浏览器。Exit %d." % _code)
             return _code
         log("[auto] API 未完成的任务: %s → 回退 UI（Playwright）。" % sorted(_need))

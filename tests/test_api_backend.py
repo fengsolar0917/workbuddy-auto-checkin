@@ -29,6 +29,27 @@ CHEEKIN_DO = "/v2/billing/meter/daily-checkin"
 TRAVEL_STATUS = "/activity/growth/buddy/travel/status"
 TRAVEL_CLAIM = "/activity/growth/buddy/travel/claim"
 TRAVEL_DEPART = "/activity/growth/buddy/travel/depart"
+STREAK = "/activity/growth/streak"
+REDEEM = "/activity/growth/redeem"
+LOT_SUM = "/activity/growth/lottery/summary"
+LOT_DRAW = "/activity/growth/lottery/draw"
+HEATMAP = "/activity/growth/heatmap"
+MAKEUP = "/activity/growth/makeup-cards/use"
+
+# 连登任务固定「今天」（补签按当月过滤，需确定性）
+import datetime as _dt
+FAKE_TODAY = _dt.date(2026, 9, 26)
+
+
+def default_streak(days=30, balance=0,
+                   s7="claimed", s14="claimed", s28="claimed",
+                   madeup=()):
+    return {"streak": {"days": days, "makeup_dates": list(madeup)},
+            "makeup_cards": {"balance": balance, "max": 4},
+            "redemption_status": {"tier_7d_status": s7, "tier_14d_status": s14,
+                                   "tier_28d_status": s28, "remaining_days": days,
+                                   "tiers": []},
+            "launch_date": "2026-06-17"}
 
 
 def make_args(**over):
@@ -47,8 +68,12 @@ def make_args(**over):
 class FakeAPI:
     """Reusable fake for _vendor_buddy_station.api_call."""
     def __init__(self, state=None, raise_on=None):
-        # state: {"checked": bool, "travel": dict or None}
+        # state: {"checked": bool, "travel": dict, "streak": dict,
+        #         "chances": int, "cells": [heatmap cell dicts]}
         self.state = state or {"checked": False, "travel": {"state": "idle"}}
+        self.state.setdefault("streak", default_streak())
+        self.state.setdefault("chances", 0)
+        self.state.setdefault("cells", [])
         # raise_on: set of paths that should raise
         self.raise_on = set(raise_on or [])
         self.calls = []
@@ -67,6 +92,19 @@ class FakeAPI:
             return 200, {"code": 0, "data": {"reward_credit": 8}}
         if path == TRAVEL_DEPART:
             return 200, {"code": 0, "data": {"state": "traveling", "location": {"name": "咖啡馆"}}}
+        if path == STREAK:
+            return 200, {"code": 0, "data": self.state["streak"]}
+        if path == REDEEM:
+            return 200, {"code": 0, "data": {}}
+        if path == LOT_SUM:
+            return 200, {"code": 0, "data": {"chances": self.state["chances"],
+                                              "module": {"enabled": True}}}
+        if path == LOT_DRAW:
+            return 200, {"code": 0, "data": {"prize": {"name": "谢谢参与"}}}
+        if path == HEATMAP:
+            return 200, {"code": 0, "data": {"cells": self.state["cells"]}}
+        if path == MAKEUP:
+            return 200, {"code": 0, "data": {}}
         return 200, {"code": 0, "data": {}}
 
 
@@ -142,6 +180,87 @@ def test_missing_api_backend_module_falls_back_everything():
         assert need == {"checkin", "gift", "travel"}, need
     finally:
         auto_growth.api_backend = saved
+
+
+# ---------- 连登奖励（兑换 / 抽奖 / 补签） ----------
+
+def test_redeem_only_claimable_tiers():
+    st = default_streak(days=15, s7="claimed", s14="claimable", s28="locked")
+    fake = FakeAPI(state={"checked": True, "travel": {"state": "traveling"}, "streak": st})
+    setup_module(fake)
+    res, need = auto_growth.run_via_api(make_args())
+    redeem_calls = [c for c in fake.calls if c[1] == REDEEM]
+    assert len(redeem_calls) == 1, redeem_calls
+    assert redeem_calls[0][2]["tier"] == "14d"
+    assert "client_token" in redeem_calls[0][2]
+    assert res["streak"] == "ok", res
+    assert need == set(), need
+
+
+def test_redeem_skips_when_nothing_claimable():
+    fake = FakeAPI(state={"checked": True, "travel": {"state": "traveling"}})
+    setup_module(fake)  # default: all claimed
+    res, _ = auto_growth.run_via_api(make_args())
+    assert [c for c in fake.calls if c[1] == REDEEM] == []
+
+
+def test_lottery_draws_available_chances():
+    fake = FakeAPI(state={"checked": True, "travel": {"state": "traveling"}, "chances": 2})
+    setup_module(fake)
+    res, _ = auto_growth.run_via_api(make_args())
+    draws = [c for c in fake.calls if c[1] == LOT_DRAW]
+    assert len(draws) == 2, draws
+    assert res["streak"] == "ok"
+
+
+def test_lottery_skips_without_chances():
+    fake = FakeAPI(state={"checked": True, "travel": {"state": "traveling"}, "chances": 0})
+    setup_module(fake)
+    res, _ = auto_growth.run_via_api(make_args())
+    assert [c for c in fake.calls if c[1] == LOT_DRAW] == []
+
+
+def test_makeup_uses_card_for_broken_date():
+    st = default_streak(days=10, balance=2, s7="claimed", s14="locked", s28="locked")
+    cells = [{"date": "2026-09-20", "score": 0}, {"date": "2026-09-21", "score": 1}]
+    fake = FakeAPI(state={"checked": True, "travel": {"state": "traveling"},
+                          "streak": st, "cells": cells})
+    setup_module(fake)
+    saved_today = api_backend._today
+    api_backend._today = lambda: FAKE_TODAY
+    try:
+        res, _ = auto_growth.run_via_api(make_args())
+    finally:
+        api_backend._today = saved_today
+    makeups = [c for c in fake.calls if c[1] == MAKEUP]
+    # days=10, 最近未达成档 14d → need=4，但断登只有 1 天 → 只用 1 张
+    assert len(makeups) == 1, makeups
+    assert makeups[0][2]["target_date"] == "2026-09-20"
+    assert res["streak"] == "ok"
+
+
+def test_makeup_skips_when_all_tiers_claimed():
+    cells = [{"date": "2026-09-20", "score": 0}]
+    fake = FakeAPI(state={"checked": True, "travel": {"state": "traveling"},
+                          "streak": default_streak(days=30, balance=4), "cells": cells})
+    setup_module(fake)
+    saved_today = api_backend._today
+    api_backend._today = lambda: FAKE_TODAY
+    try:
+        auto_growth.run_via_api(make_args())
+    finally:
+        api_backend._today = saved_today
+    assert [c for c in fake.calls if c[1] == MAKEUP] == []
+
+
+def test_streak_api_error_reported_without_ui_fallback():
+    # streak 读取失败 → streak 组 fail，但 UI 无法补做 → 不得进 need_ui
+    fake = FakeAPI(state={"checked": False, "travel": {"state": "idle"}},
+                   raise_on={CHEEKIN_DO, STREAK})
+    setup_module(fake)
+    res, need = auto_growth.run_via_api(make_args())
+    assert res["streak"] == "fail", res
+    assert need == {"checkin"}, need  # checkin fail 回退 UI；streak 不回退
 
 
 if __name__ == "__main__":

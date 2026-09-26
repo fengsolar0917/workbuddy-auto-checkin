@@ -192,3 +192,72 @@ Until then, the default UI-click strategy is the safe, version-tolerant choice.
 - **活动/按钮缺失**：签到活动 `active:false`，或旅行弹窗未渲染/文案变更 → 找不到确认按钮 → 退出码 5（告警，不静默成功）。
 - **未登录**：页面渲染登录入口 → 退出码 4，提示先用 `--open` 登录一次。
 - 真实「点击领取/派出」的写接口未抓到（弹窗没渲染 + 活动未激活），故脚本默认走 **点击 UI 按钮**，最稳。若抓到真实写接口，可后续增加 `--claim-api` 式参数（签到已支持）。
+
+---
+
+## 连续登录奖励（月历签到页：7 / 14 / 28 天里程碑兑换）— 2026-09-26 逆向实测
+
+> 来源：官网 usercenter SPA（`/profile/growth-center` 页面 chunk 反编译 +
+> 真实账号只读请求验证）。页面即「当前连续登录 N 天 / 兑换奖励 / 补签卡」那个月历页。
+> 与每日签到（`/v2/billing/meter/*`）是**两套独立活动**：这里按「自然月连登天数」计算。
+
+### 端点（域名 `www.workbuddy.cn`，无 `/v2` 前缀，仅需 Bearer Token，同旅行接口）
+
+| Method | Path | Body | 用途 |
+|---|---|---|---|
+| GET  | `/activity/growth/streak` | — | 连登天数、补签卡余额、三档兑换状态（核心读） |
+| GET  | `/activity/growth/redeem/summary` | — | 本月已兑次数（starter/advanced/legendary_count） |
+| POST | `/activity/growth/redeem` | `{"tier":"7d\|14d\|28d","client_token":"u-<uuid>"}` | **兑换奖励**（幂等：client_token 客户端生成） |
+| POST | `/activity/growth/makeup-cards/use` | `{"target_date":"YYYY-MM-DD"}` | **补签**（消耗 1 张补签卡） |
+| GET  | `/activity/growth/lottery/summary` | — | 抽奖 chances / module 开关 |
+| POST | `/activity/growth/lottery/draw` | `{"client_token":"u-<uuid>"}` | 抽奖（消耗 1 次机会） |
+| GET  | `/activity/growth/lottery/prizes` / `draws` / `chances` / `chances/logs` / `rewards` | query `page,page_size` | 奖品/记录 |
+
+### 档位（官方页面硬编码，与 GET streak 返回一致）
+
+| tier | 名称 | 天数 | 奖励 |
+|---|---|---|---|
+| `7d`  | 入门档 | 7  | 0 积分 + 2 能量 + 1 补签卡 + 1 抽奖 |
+| `14d` | 进阶档 | 14 | 50 积分 + 3 能量 + 1 补签卡 + 1 抽奖 |
+| `28d` | 巅峰档 | 28 | 150 积分 + 5 能量 + 1 补签卡 + 1 抽奖 |
+
+⚠️ 更正：totorosir 源码里 `STREAK_TIERS` 推断的「7天=+50积分」是**错的**（那是 14d 档）；
+7d 档给的是 0 积分 + 2 能量 + 1 补签卡 + 1 抽奖。
+
+### GET /activity/growth/streak 响应结构（实测 2026-09-26）
+
+```json
+{
+  "streak": {"days": 26, "month_total_days": 26, "month_consumed_days": 0,
+             "next_tier": "28d", "next_tier_remaining": 2, "makeup_dates": []},
+  "makeup_cards": {"balance": 4, "max": 4},
+  "redemption_status": {"tier_7d_count": 1, "tier_14d_count": 1, "tier_28d_count": 0,
+    "tier_7d_status": "claimed", "tier_14d_status": "claimed", "tier_28d_status": "locked",
+    "remaining_days": 26,
+    "tiers": [{"tier":"7d","days":7,"credit":0,"energy":2,"cards":1,"chances":1}, ...]},
+  "timezone": "Asia/Shanghai", "launch_date": "2026-06-17"
+}
+```
+
+`tier_*_status` 取值：`claimed`（已兑）/ `claimable`（可兑）/ `locked`（未达天数）。
+
+### 补签接口错误语义（页面源码）
+
+- HTTP 403 + `no makeup card` → 没有补签卡（可先兑 7d 档获取）
+- HTTP 400 + `future date` → 不能补未来
+- HTTP 400 + `cannot makeup history month` → 仅限当前自然月
+- HTTP 400 + `target date before launch` → 早于活动上线日（2026-06-17）
+
+### 兑换/抽奖的 client_token
+
+客户端生成：`"u-" + crypto.randomUUID()`（降级 `"u-" + 时间戳 + 随机串`），作幂等键。
+服务端按 token 去重，重试安全。
+
+### 自动化可行性结论
+
+✅ 完全可行，纯 REST + 现有 accessToken 即可，无需浏览器。建议策略（若实现）：
+- **自动兑换**：读 streak → 对所有 `status=="claimable"` 的 tier 依序 POST redeem（带随机 UUID）。
+  绝不碰 `locked` 档；`claimed` 跳过。
+- **自动补签**：仅当 `streak.days < 下档要求` 且断登日 ≤ 今天、当月、卡余额>0 时可选启用
+  （有争议：补签是为「保连登」，是否值得花卡由用户决定，建议默认关）。
+- **抽奖**：chances>0 时可自动 draw（可选）。

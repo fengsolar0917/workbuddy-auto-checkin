@@ -38,8 +38,15 @@ background, without starting the WorkBuddy desktop client:
 4. **每日签到领积分** — the daily check-in credits (第 1–6 天 100 积分/天,
    第 7 天 1000), a sibling action on the same account, driven by the same
    logged-in session
+5. **连登奖励（API-only）** — monthly login-streak milestones: auto-**redeem**
+   every claimable 7/14/28-day tier, auto-**draw** available lottery chances,
+   and optionally auto-**makeup** broken login days with makeup cards (capped:
+   only as many cards as needed to reach the next locked tier). REST-only
+   (`GET /activity/growth/streak`, `POST /activity/growth/redeem`, ...); on
+   API failure these are reported (exit 5) but **not** retried via UI, since
+   the UI flow has no automation for this page.
 
-All four are handled by **one script** (`scripts/auto_growth.py`). You can run the
+All five are handled by **one script** (`scripts/auto_growth.py`). You can run the
 whole routine, or limit to a subset with flags (see below). It reuses an
 already-logged-in browser profile so the same-site session cookie authenticates
 every request — no token extraction required.
@@ -212,6 +219,9 @@ The script auto-detects OS, browser, user-data dir, and profile. Useful flags:
 | `--only-travel` | Only dispatch Buddy travel |
 | `--destination {咖啡馆,商场店铺,健身房,古镇客栈}` | Travel destination (default 咖啡馆) |
 | `--claim-api PATH` | Explicit check-in claim endpoint to POST instead of clicking UI |
+| `--no-redeem` | Skip streak milestone auto-redeem (7/14/28-day login rewards; on by default) |
+| `--no-lottery` | Skip auto lottery draw from streak rewards (on by default) |
+| `--no-makeup` | Skip auto makeup-card use for broken login days (on by default, capped: only as many cards as needed to reach the next locked tier) |
 | `--backend {auto,api,ui}` | Execution backend: `auto` (API-first + UI fallback, **default**) / `api` (API only) / `ui` (Playwright only) |
 | `--browser edge\|chrome\|chromium` | Force a browser (else auto-detect) |
 | `--user-data-dir PATH` | Explicit User Data dir (folder containing `Default`) |

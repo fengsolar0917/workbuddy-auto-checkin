@@ -19,13 +19,19 @@ state (AES-256-GCM envelope decryption), no manual token extraction.
 
 ## ✨ 特性
 
-- **一个 Skill 完成全部**：签到 + 领礼物 + 派旅行，统一入口 `auto_growth.py`，可整体跑也可按需 `--skip-*` / `--only-*` 拆分。
+- **一个 Skill 完成全部**：签到 + 领礼物 + 派旅行 + 连登奖励（兑换/抽奖/补签），统一入口 `auto_growth.py`，可整体跑也可按需 `--skip-*` / `--only-*` / `--no-*` 拆分。
 - **API 优先，UI 兜底（默认）**：默认 `--backend auto`——先用官方 REST 接口（仅 Python 标准库，无需浏览器/Playwright）完成；只有签到 / 领旅行奖励 / 派旅行的某一项真的失败（取不到 token、401、接口异常）时，才对这一项回退到 Playwright/UI 补齐。绝大多数定时运行根本不启动浏览器。
 - **零硬编码**：不写死用户名、路径、浏览器。自动探测操作系统（Windows / macOS / Linux）+ 已安装浏览器（Edge / Chrome / Chromium）+ 用户目录 + Profile。
 - **依赖缺失不崩**：没装 Playwright 会给出明确安装命令后退出，而不是静默失败（API 路径本身不依赖它）。
 - **优雅降级**：活动未开启 / 今日已领 / 已领过礼物 / 已在旅行 / 未登录 / API 不可用，全部安全跳过并写日志（退出码 0/4）。
 - **跨平台调度**：内置 Windows 任务计划、macOS launchd、Linux cron 三种挂法；支持 `pythonw` 无窗口后台。
 - **可复用**：直接作为 WorkBuddy Skill 复制到 `~/.workbuddy/skills/` 使用，或独立 Python 脚本运行。
+
+- **连登奖励全自动（2026-09 新增，API-only）**：月历连登 7/14/28 天里程碑——
+  自动兑换所有已达成的档位（`POST /activity/growth/redeem`，幂等 client_token）、
+  自动抽掉可用抽奖次数、按需限量使用补签卡补当月断登日（只补到「刚好够到下一个未达成档」，
+  绝不超花）。`--no-redeem` / `--no-lottery` / `--no-makeup` 可分别关闭。
+  端点契约详见 `references/api_notes.md`。
 
 ## ⚙️ 原理
 
