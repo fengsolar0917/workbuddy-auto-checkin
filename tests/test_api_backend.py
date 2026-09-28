@@ -204,6 +204,19 @@ def test_redeem_skips_when_nothing_claimable():
     assert [c for c in fake.calls if c[1] == REDEEM] == []
 
 
+def test_redeem_handles_available_status():
+    # 官方接口实测返回 available（达成天数待领取），必须与 claimable 等价处理
+    st = default_streak(days=28, s7="claimed", s14="claimed", s28="available")
+    fake = FakeAPI(state={"checked": True, "travel": {"state": "traveling"}, "streak": st})
+    setup_module(fake)
+    res, need = auto_growth.run_via_api(make_args())
+    redeem_calls = [c for c in fake.calls if c[1] == REDEEM]
+    assert len(redeem_calls) == 1, redeem_calls
+    assert redeem_calls[0][2]["tier"] == "28d"
+    assert res["streak"] == "ok", res
+    assert need == set(), need
+
+
 def test_lottery_draws_available_chances():
     fake = FakeAPI(state={"checked": True, "travel": {"state": "traveling"}, "chances": 2})
     setup_module(fake)

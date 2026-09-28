@@ -239,7 +239,7 @@ Until then, the default UI-click strategy is the safe, version-tolerant choice.
 }
 ```
 
-`tier_*_status` 取值：`claimed`（已兑）/ `claimable`（可兑）/ `locked`（未达天数）。
+`tier_*_status` 取值：`claimed`（已兑）/ `available`（达成天数、待领取，实测值）/ `claimable`（同 available，社区代码中亦出现）/ `locked`（未达天数）。**自动化需把 `available` 与 `claimable` 一并视为可兑**。
 
 ### 补签接口错误语义（页面源码）
 
@@ -256,7 +256,7 @@ Until then, the default UI-click strategy is the safe, version-tolerant choice.
 ### 自动化可行性结论
 
 ✅ 完全可行，纯 REST + 现有 accessToken 即可，无需浏览器。建议策略（若实现）：
-- **自动兑换**：读 streak → 对所有 `status=="claimable"` 的 tier 依序 POST redeem（带随机 UUID）。
+- **自动兑换**：读 streak → 对所有 `status in ("available","claimable")` 的 tier 依序 POST redeem（带随机 UUID）。
   绝不碰 `locked` 档；`claimed` 跳过。
 - **自动补签**：仅当 `streak.days < 下档要求` 且断登日 ≤ 今天、当月、卡余额>0 时可选启用
   （有争议：补签是为「保连登」，是否值得花卡由用户决定，建议默认关）。

@@ -106,9 +106,11 @@ def get_streak(token):
 
 
 def api_redeem(token):
-    """自动兑换：对所有 status=='claimable' 的档位依序 POST redeem（幂等 token）。
+    """自动兑换：对所有 status 属于可兑集合的档位依序 POST redeem（幂等 token）。
 
-    绝不碰 locked（未达天数）与 claimed（已兑）。返回 {'outcome','message','redeemed': [tier]}。
+    可兑状态：官方接口实测返回 `available`（达成天数，待领取）；社区代码里也
+    出现过 `claimable`。两者等价处理。绝不碰 `locked`（未达天数）与
+    `claimed`（已兑）。返回 {'outcome','message','redeemed': [tier]}。
     """
     try:
         data = get_streak(token)
@@ -122,7 +124,7 @@ def api_redeem(token):
             logs.append("%s已兑过" % tier)
         elif status == "locked":
             logs.append("%s未达成(差%d天)" % (tier, max(0, TIER_DAYS[tier] - (rs.get("remaining_days") or 0))))
-        elif status == "claimable":
+        elif status in ("claimable", "available"):
             payload = {"tier": tier, "client_token": _client_token()}
             code, body = _call(token, REDEEM_PATH, "POST", payload)
             if code == 200 and isinstance(body, dict) and body.get("code") == 0:
