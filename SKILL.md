@@ -6,7 +6,7 @@ falls back to a Playwright/UI path only for the specific tasks the API could not
 complete**, so most scheduled runs need no browser at all. Use when the user wants
 to build, run, package, or distribute a reusable cross-platform background
 automation for any of these WorkBuddy growth-center tasks, or asks how to auto
-"每日签到" / "领取礼物" / "派龙焰喵去旅行" / "派猫猫旅行" unattended. Covers an
+"每日签到" / "领取礼物" / "派 Buddy 去旅行" / "派萌宠旅行" unattended. Covers an
 optional browser-profile fallback, environment auto-detection (OS +
 Edge/Chrome/Chromium), current-Buddy detection, scheduled tasks (Windows Task
 Scheduler / macOS launchd / Linux cron), and safe degradation when inactive /
@@ -24,9 +24,9 @@ background, without starting the WorkBuddy desktop client:
 
 1. **打开成长计划页面** — `https://www.workbuddy.cn/profile/growth-center`
 2. **领取礼物** — claim the gift the Buddy brought back from its trip
-   (the "Buddy 报告" preview + redeemable points, e.g. 9 积分)
+   (the "Buddy 报告" preview + some redeemable credits — the amount varies per campaign)
 3. **派「当前展示的 Buddy」去旅行** — the script reads the Buddy name shown
-   on the page hero (e.g. 龙焰喵 SSR) and dispatches **that** one. Important:
+   on the page hero (your current Buddy, e.g. "龙焰喵 SSR") and dispatches **that** one. Important:
    WorkBuddy Buddies have **no "等级/level" field** — only rarity (SSR etc.) —
    so "dispatch the highest-level pet" is not implementable; instead the skill
    dispatches whatever Buddy is currently displayed. It picks a destination
@@ -35,8 +35,8 @@ background, without starting the WorkBuddy desktop client:
    only appears when the Buddy is **at home** and ready to go — while it is
    traveling, or while a returned gift awaits claim, the button is hidden),
    the script logs and **skips safely (exit 0)** instead of erroring.
-4. **每日签到领积分** — the daily check-in credits (第 1–6 天 100 积分/天,
-   第 7 天 1000), a sibling action on the same account, driven by the same
+4. **每日签到领积分** —    the daily check-in credits (an amount that varies per campaign; the script
+   simply claims whatever the active campaign grants), a sibling action on the same account, driven by the same
    logged-in session
 5. **连登奖励（API-only）** — monthly login-streak milestones: auto-**redeem**
    every claimable 7/14/28-day tier, auto-**draw** available lottery chances,
@@ -75,8 +75,8 @@ You do **not** have to close your daily browser. Pick the mode that fits:
 
 ## When to use
 
-- The user says "打开成长计划", "领取礼物", "派龙焰喵去旅行", "派猫猫旅行",
-  "每日签到", "领积分", "成长计划自动", "龙焰喵自动", or any "WorkBuddy 自动".
+- The user says "打开成长计划", "领取礼物", "派 Buddy 去旅行", "派萌宠旅行",
+  "每日签到", "领积分", "成长计划自动", "Buddy 自动", "萌宠自动", or any "WorkBuddy 自动".
 - The user wants to schedule these actions on a headless machine / server.
 - The user wants to package this workflow as a reusable WorkBuddy skill or
   publish it to GitHub.
@@ -89,7 +89,7 @@ You do **not** have to close your daily browser. Pick the mode that fits:
    clicking the "领取今日礼包 / 签到" button on the workbench.
 2. The Buddy actions are triggered by clicking UI buttons on the growth-center
    page (no public claim API was observed): click **领取礼物** → modal
-   "Buddy 满载而归啦～" → click **领取 9 积分** → click **关闭** → the Buddy
+   "Buddy 满载而归啦～" → click **领取积分** → click **关闭** → the Buddy
    returns home and a **派<宠物名>去旅行** button appears → click it → pick
    destination → click **确定派出** → "Buddy 正在 XX 采风中… 距离回家
    HH:MM:SS". (This is a **manual** daily loop the user performs; the Buddy
@@ -100,7 +100,7 @@ You do **not** have to close your daily browser. Pick the mode that fits:
    numeric level. The script reads the Buddy name from the page hero
    (`detect_current_buddy()` in `scripts/auto_growth.py`, regex
    `/专属 Buddy ([一-龥]+喵)/`), then clicks the travel trigger for that name
-   (`派龙焰喵去旅行` etc.), falling back to generic `派猫猫旅行 / 派去旅行 …` text.
+   (`派<宠物名>去旅行` e.g. 派龙焰喵去旅行 etc.), falling back to generic `派猫猫旅行 / 派去旅行 …` text.
    This keeps working on any account (the displayed name is never hardcoded).
    If no travel button is present at that moment (Buddy not at home), the
    script reports it and **skips safely (exit 0)** — it does NOT fail or
@@ -305,7 +305,7 @@ module). Pure stdlib + the vendored module:
 
 ```bash
 python tests/test_api_backend.py
-# => 7 passed, 0 failed
+# => 15 passed, 0 failed
 ```
 
 **B. UI regression suite (real headless Chromium).** Runs `auto_growth.py`
@@ -335,7 +335,7 @@ Last verified result (real headless Chromium, 18 scenarios, `--backend ui`):
 | `bd_full` | gift unclaimed | 0 | 0 | gift + travel |
 | `bd_gift_claimed` | button already gone | 0 | 0 | skips gift, travels |
 | `bd_loggedout` | login page | 4 | 4 | ERROR "not logged in" |
-| `bd_travel_dispatch` | `dispatch=1` (button present) | 0 | 0 | dispatches current Buddy 龙焰喵 |
+| `bd_travel_dispatch` | `dispatch=1` (button present) | 0 | 0 | dispatches current Buddy |
 | `bd_travel_skipped` | no travel button (live-like) | 0 | 0 | INFO "安全跳过" (not an error) |
 | `bd_travel_already` | `traveling=1` (采风中) | 0 | 0 | already-traveling skip |
 | `bd_travel_fail` | button + `failtravel=1` | 5 | 5 | WARN (alert) |

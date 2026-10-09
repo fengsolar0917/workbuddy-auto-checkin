@@ -1,15 +1,19 @@
 # WorkBuddy 成长计划一站式自动化（workbuddy-auto-checkin）
 
 > 一个跨平台、零硬编码的 WorkBuddy Skill：**不启动 WorkBuddy 桌面客户端**，
-> 把成长计划页的一整套操作做成一个 Skill —— 打开成长计划页、**领取礼物**、
-> **派龙焰喵去旅行**、以及**每日签到领积分（100 积分/天）**。
+> 把成长计划页的一整套操作做成一个 Skill —— **每日签到领积分（积分规则以当期活动为准）**、
+> **领取 Buddy 礼物**、**月历连登奖励（7/14/28 天里程碑自动兑换·抽奖·补签）**。
 > 默认走 **API 优先**方案（直连官方 REST 接口，只需要 Python 标准库，**无需浏览器**），
 > 仅当 API 取不到 token / 鉴权失败 / 接口异常时，才对失败的任务**回退到 Playwright/UI**
-> 方案补齐。复用你本机 `workbuddy.cn` 的登录态（AES-256-GCM 信封解密），无需手动提取 token。
+> 方案补齐。复用你本机 `www.workbuddy.cn` 的登录态（AES-256-GCM 信封解密），无需手动提取 token。
+>
+> ⚠️ **关于「派 Buddy 去旅行」**：Buddy 旅行是你**每天在客户端手动派出**的（并非自动出行），
+> 脚本只会在「Buddy 在家、待派出」的短暂窗口**尽力尝试**派发；找不到出发按钮时**安全跳过（exit 0）**，
+> 绝不伪造派发成功。因此旅行只是**可选附属能力**，不是核心自动化项，不应作为主卖点。
 
 **English summary:** A single cross-platform, zero-hardcoded WorkBuddy skill that
 auto-runs the whole growth-center routine in the background — daily check-in
-credits, claim the 龙焰喵 Buddy gift, and dispatch the Buddy on a trip — without
+credits, claim the Buddy gift, and dispatch the Buddy on a trip — without
 launching the WorkBuddy desktop client. It runs **API-first** (official REST
 endpoints, stdlib-only, no browser) and **falls back to Playwright/UI only for the
 tasks the API failed to complete**. It reuses your local `workbuddy.cn` login
@@ -19,7 +23,7 @@ state (AES-256-GCM envelope decryption), no manual token extraction.
 
 ## ✨ 特性
 
-- **一个 Skill 完成全部**：签到 + 领礼物 + 派旅行 + 连登奖励（兑换/抽奖/补签），统一入口 `auto_growth.py`，可整体跑也可按需 `--skip-*` / `--only-*` / `--no-*` 拆分。
+- **一个 Skill 完成全部**：签到 + 领礼物 + 连登奖励（兑换/抽奖/补签）+ 派旅行（可选/尽力），统一入口 `auto_growth.py`，可整体跑也可按需 `--skip-*` / `--only-*` / `--no-*` 拆分。
 - **API 优先，UI 兜底（默认）**：默认 `--backend auto`——先用官方 REST 接口（仅 Python 标准库，无需浏览器/Playwright）完成；只有签到 / 领旅行奖励 / 派旅行的某一项真的失败（取不到 token、401、接口异常）时，才对这一项回退到 Playwright/UI 补齐。绝大多数定时运行根本不启动浏览器。
 - **零硬编码**：不写死用户名、路径、浏览器。自动探测操作系统（Windows / macOS / Linux）+ 已安装浏览器（Edge / Chrome / Chromium）+ 用户目录 + Profile。
 - **依赖缺失不崩**：没装 Playwright 会给出明确安装命令后退出，而不是静默失败（API 路径本身不依赖它）。
@@ -40,7 +44,7 @@ state (AES-256-GCM envelope decryption), no manual token extraction.
 **失败才回退 UI（Playwright）**：当 API 取不到 token / 鉴权失败 / 接口报错时，对应任务回退到原来的浏览器方案（页面内 `fetch` 带同域 Cookie 点按钮）。失败哪几项就只回退哪几项，已成功的项不重做。可用 `--backend api` 强制只走 API（失败即告警、不回退），或 `--backend ui` 强制只走 UI 调试。
 
 1. 每日签到有**专门的领取动作**，不会登录即自动到账（需手动点「领取今日礼包」）。API 路径核心接口：`POST /v2/billing/meter/checkin-activity-status`（读状态）、`POST /v2/billing/meter/daily-checkin`（幂等领取，`code 10001` = 今日已签）。
-2. 龙焰喵「领取礼物 / 派去旅行」在成长计划页（`/profile/growth-center`）点按钮触发：领礼物 → 弹窗领积分+关闭 → 选目的地 → 确定派出 → 显示「采风中」。API 旅行走 `www.workbuddy.cn`（无 `/v2`）：`travel/status`、`travel/depart`、`travel/claim`。
+2. Buddy「领取礼物 / 派去旅行」在成长计划页（`/profile/growth-center`）点按钮触发：领礼物 → 弹窗领积分+关闭 → 选目的地 → 确定派出 → 显示「采风中」。API 旅行走 `www.workbuddy.cn`（无 `/v2`）：`travel/status`、`travel/depart`、`travel/claim`。
 3. 鉴权：API 用本地解密出的 `accessToken`；UI 回退用同域会话 Cookie——脚本用 Playwright 以**持久化用户目录**启动已登录的浏览器（headless），或**附着运行中的浏览器（CDP）**，在页面内 `fetch` 读状态并点按钮。
 4. 关键坑：UI 路径不能用 `urllib`/`requests` 直打（带不上浏览器 Cookie），必须在页面内 `fetch`。API 路径则不需要 Cookie，直接带 `accessToken` 调 REST。
 
@@ -82,7 +86,7 @@ python scripts/auto_growth.py --cdp-url 127.0.0.1:9222
 # 指定旅行目的地
 python scripts/auto_growth.py --destination 古镇客栈
 
-# 只做龙焰喵（跳过签到）
+# 只做 Buddy 旅行（跳过签到）
 python scripts/auto_growth.py --skip-checkin
 
 # 只签到
@@ -140,7 +144,7 @@ schtasks /create /tn "WorkBuddy成长计划" ^
 
 ```bash
 python tests/test_api_backend.py
-# => 7 passed, 0 failed
+# => 15 passed, 0 failed
 ```
 
 **B. UI 回归套件（真实 headless Chromium）**——用本地 mock 服务器模拟 WorkBuddy 的签到接口和成长计划页，实跑 `auto_growth.py` 并断言退出码（固定 `--backend ui`，绝不会打到真实 API）。需要 Playwright + Chromium：
@@ -190,14 +194,14 @@ workbuddy-auto-checkin/
 ├── SKILL.md              # Skill 元数据 + 使用说明（WorkBuddy 加载）
 ├── scripts/
 │   ├── auto_growth.py        # 统一核心脚本（零硬编码，签到+礼物+旅行；API/UI 双后端编排）
-│   ├── api_backend.py        # API 优先后端薄封装（签到 / 领旅行奖励 / 派旅行）
+│   ├── api_backend.py        # API 优先后端薄封装（签到 / 领旅行奖励 / 派旅行 / 连登兑换·抽奖·补签）
 │   └── _vendor_buddy_station.py  # 社区技能 totorosir-workbuddy-score v3.1.2 (MIT-0) 逐字节搬运：AtRest token 解密 + REST 调用（不手改）
 ├── references/
-│   └── api_notes.md      # 实测接口与 UI 流程笔记（调试用）
+│   └── api_notes.md      # 实测接口与 UI 流程笔记（含连登 streak/redeem/lottery/makeup 端点契约，调试用）
 ├── tests/
 │   ├── mock_server.py        # 模拟 WorkBuddy 签到接口 + 成长计划页
 │   ├── run_growth_tests.py   # 编排 18 个 UI 场景实跑并断言退出码（--backend ui）
-│   └── test_api_backend.py   # API 后端 + 回退决策的单元测试（无浏览器、无网络）
+│   └── test_api_backend.py   # API 后端 + 回退决策 + 连登 redeem/lottery/makeup 的单元测试（无浏览器、无网络）
 ├── README.md             # 本文件
 ├── LICENSE               # MIT
 └── .gitignore

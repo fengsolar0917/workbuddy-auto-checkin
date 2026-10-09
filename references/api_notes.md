@@ -18,9 +18,9 @@ vendored `scripts/_vendor_buddy_station.py`, from community skill
 directly — no browser, no Playwright, stdlib-only. It needs the WorkBuddy
 **desktop login state**, which lives at:
 
-```
-C:\Users\<user>\AppData\Local\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info
-```
+登录态文件是 WorkBuddy 桌面端写入的 `workbuddy-desktop.info`（AES-256-GCM 信封）。
+**其具体路径因平台 / 版本而异，脚本会自动探测，不要硬编码绝对路径。**
+（网络上流传的 `CodeBuddyExtension/...` 路径属于另一款产品 CodeBuddy，与本 Skill 无关。）
 
 ### Login token (since WorkBuddy 3.1.0: AES-256-GCM envelope, NOT plaintext JWT)
 
