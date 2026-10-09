@@ -19,3 +19,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+Note: `scripts/_vendor_buddy_station.py` is vendored verbatim from the
+community skill **totorosir-workbuddy-score v3.1.2**, released under MIT-0
+(public-domain dedication, no attribution required). That file is the work of
+its original author(s) and is NOT covered by the copyright line above; every
+other file in this repository is.

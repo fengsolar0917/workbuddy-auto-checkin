@@ -1,6 +1,6 @@
 ---
 name: workbuddy-auto-checkin
-description: One-skill automation for the whole WorkBuddy 成长计划 (growth center) routine — daily check-in credits (每日签到 / 领取今日礼包), 领取礼物 (claim the Buddy gift incl. points), 派「当前展示的 Buddy」去旅行 (dispatch the Buddy currently shown on the page — WorkBuddy Buddies have NO level field, only rarity like SSR; so this skill dispatches the displayed Buddy, no hardcoded name), and the monthly login-streak rewards (redeem / lottery / makeup) — all in the background without launching the WorkBuddy desktop client, via official REST APIs only (no browser, no Playwright). Use when the user wants to build, run, package, or distribute a reusable cross-platform background automation for any of these WorkBuddy growth-center tasks, or asks how to auto "每日签到" / "领取礼物" / "派 Buddy 去旅行" / "派萌宠旅行" unattended. Covers current-Buddy detection, scheduled tasks (Windows Task Scheduler / macOS launchd / Linux cron), and safe degradation when inactive / already done / not logged in / API unavailable.
+description: WorkBuddy 成长计划自动化的唯一入口 — 每日签到、领取 Buddy 礼物、派当前 Buddy 旅行、月历连登奖励（兑换/抽奖/可选补签），全程官方 REST API（无浏览器、无 Playwright、仅标准库，Windows）。当用户说 "每日签到" / "领取礼物" / "派 Buddy 去旅行" / "派萌宠旅行" / "领积分" / "成长计划自动" / "WorkBuddy 自动"，或要在 Windows 上定时无人值守完成这些任务时使用。
 agent_created: true
 ---
 
@@ -8,19 +8,23 @@ agent_created: true
 
 ## Overview
 
-This **single** skill delivers one cross-platform, zero-hardcoding automation that
-performs the **entire** growth-center routine the user originally asked for — in the
+This **single** skill delivers one zero-hardcoding automation that performs the
+**entire** growth-center routine the user originally asked for — in the
 background, without starting the WorkBuddy desktop client, **via official REST APIs only**:
 
 1. **每日签到领积分** — the daily check-in credits (an amount that varies per campaign; the script simply claims whatever the active campaign grants).
 2. **领取礼物** — claim the gift the Buddy brought back from its trip (the "Buddy 报告" preview + some redeemable credits — the amount varies per campaign).
 3. **派「当前展示的 Buddy」去旅行** — the script reads the current Buddy from the API (no hardcoded name) and dispatches it. It picks a destination (咖啡馆 / 商场店铺 / 健身房 / 古镇客栈; default 咖啡馆). If the Buddy is not at home / the travel API is not open, the script logs and **skips safely (exit 0)** instead of erroring. This is a **manual** daily loop the user performs; the Buddy does **not** auto-travel.
-4. **月历连登奖励（API-only）** — monthly login-streak milestones: auto-**redeem** every claimable 7/14/28-day tier, auto-**draw** available lottery chances, and optionally auto-**makeup** broken login days with makeup cards (capped: only as many cards as needed to reach the next locked tier). REST-only (`GET /activity/growth/streak`, `POST /activity/growth/redeem`, ...).
+4. **月历连登奖励（API-only）** — monthly login-streak milestones: auto-**redeem** every claimable 7/14/28-day tier, auto-**draw** available lottery chances, and — only when explicitly enabled with `--makeup` (off by default, makeup cards are scarce) — auto-**makeup** broken login days, capped at exactly the number needed to reach the next locked tier. Execution order is makeup → redeem → lottery, so a tier unlocked by makeup is redeemed in the same run. REST-only (`GET /activity/growth/streak`, `POST /activity/growth/redeem`, ...).
 
 All four are handled by **one script** (`scripts/auto_growth.py`). You can run the
 whole routine, or limit to a subset with flags (see below). It reuses an
 already-logged-in WorkBuddy desktop session by **decrypting the local login token**
 (AES-256-GCM envelope) — no browser, no token extraction needed.
+
+> **Platform: Windows only.** Token decryption relies on Windows DPAPI and
+> reading the running `WorkBuddy.exe` process memory; macOS / Linux are not
+> currently supported.
 
 ### API-only implementation (no browser)
 
@@ -77,8 +81,8 @@ Useful flags:
 | `--destination {咖啡馆,商场店铺,健身房,古镇客栈}` | Travel destination (default 咖啡馆) |
 | `--no-redeem` | Skip streak milestone auto-redeem (7/14/28-day login rewards; on by default) |
 | `--no-lottery` | Skip auto lottery draw from streak rewards (on by default) |
-| `--no-makeup` | Skip auto makeup-card use for broken login days (on by default, capped) |
-| `--backend {api}` | Execution backend (API-only; the only mode) |
+| `--makeup` | Enable auto makeup-card use for broken login days (**off by default** — cards are scarce; capped at exactly what the next locked tier needs) |
+| `--backend {api}` | Execution backend (API-only; the only mode; kept so existing scheduled commands with `--backend api` keep working) |
 
 Exit codes (for scheduler alerting):
 `0` = done or safely skipped (already claimed / already traveling / inactive / API not open);
@@ -89,7 +93,7 @@ Exit codes (for scheduler alerting):
 
 ### Step 4 — Schedule it (no client needed)
 
-Pick the scheduler for the target OS. The script runs headless and writes a `.log` next to itself.
+The script runs headless and writes a `.log` next to itself.
 
 **Windows — Task Scheduler (runs even when logged off):**
 
@@ -99,13 +103,8 @@ schtasks /create /tn "WorkBuddy成长计划" ^
   /sc daily /st 09:00 /rl limited
 ```
 
-**macOS — launchd** (drop a plist calling the script; `StartCalendarInterval` Hour=9).
-
-**Linux — cron:**
-
-```cron
-0 9 * * * /usr/bin/python3 /path/to/scripts/auto_growth.py >> /path/to/growth.log 2>&1
-```
+> macOS / Linux are not currently supported (token decryption needs Windows DPAPI
+> and the running `WorkBuddy.exe` process memory). Contributions welcome.
 
 ## Packaging & distribution
 
@@ -130,13 +129,14 @@ To ship this skill to another machine or publish it:
 
 ```bash
 python tests/test_api_backend.py
-# => 15 passed, 0 failed
+# => 20 passed, 0 failed
 ```
 
 ## Safety & caveats
 
 - **No hardcoded paths/users/pet-names.** Everything is read from the API; override only via flags.
 - **Already-done is a safe skip (exit 0).** Already-claimed check-in / already gifted / already-traveling are detected and skipped — never double-claims.
-- **API token is read-only & scoped.** The API backend only *decrypts* the on-disk WorkBuddy login token (never writes/exfiltrates it) and calls the authorized check-in + Buddy-travel + streak endpoints — no exchange / lottery / other write calls. The decryption logic is vendored from totorosir-workbuddy-score v3.1.2 (MIT-0) and kept untouched in `_vendor_buddy_station.py`.
+- **What the script actually calls.** Read-only: check-in status, Buddy info, travel status, streak status, lottery summary, heatmap. Write calls (all authorized by the same token, all idempotent where the API supports it): daily check-in claim, travel depart/claim, streak tier **redeem**, lottery **draw**, and — only with `--makeup` — **makeup-card use** (capped, never overspends). Nothing else: no exchange, no messages, no settings changes.
+- **Token handling.** The API backend only *decrypts* the on-disk WorkBuddy login token locally (never writes it back, never prints it, never sends it anywhere except the official API as the Bearer credential). The decryption logic is vendored from totorosir-workbuddy-score v3.1.2 (MIT-0) and kept untouched in `_vendor_buddy_station.py`.
 - **Activity must be live.** When `checkin-status` returns `active:false` the script logs and skips (exit 0), it never errors out.
 - **Terms of service:** low-frequency personal use is low-risk; do not build high-frequency or multi-account farming. Respect platform rules.

@@ -105,6 +105,15 @@ class FakeAPI:
         if path == HEATMAP:
             return 200, {"code": 0, "data": {"cells": self.state["cells"]}}
         if path == MAKEUP:
+            # 模拟服务端：补签成功 -> 连登天数 +1，达到档位天数的 locked 档解锁为 available
+            st = self.state["streak"]
+            st["streak"]["days"] = (st["streak"].get("days") or 0) + 1
+            d = st["streak"]["days"]
+            rs = st["redemption_status"]
+            for tier, need in (("7d", 7), ("14d", 14), ("28d", 28)):
+                k = "tier_%s_status" % tier
+                if rs.get(k) == "locked" and d >= need:
+                    rs[k] = "available"
             return 200, {"code": 0, "data": {}}
         return 200, {"code": 0, "data": {}}
 
@@ -245,7 +254,7 @@ def test_makeup_uses_card_for_broken_date():
     saved_today = api_backend._today
     api_backend._today = lambda: FAKE_TODAY
     try:
-        res, _ = auto_growth.run_via_api(make_args())
+        res, _ = auto_growth.run_via_api(make_args(makeup=True))
     finally:
         api_backend._today = saved_today
     makeups = [c for c in fake.calls if c[1] == MAKEUP]
@@ -263,10 +272,66 @@ def test_makeup_skips_when_all_tiers_claimed():
     saved_today = api_backend._today
     api_backend._today = lambda: FAKE_TODAY
     try:
+        auto_growth.run_via_api(make_args(makeup=True))
+    finally:
+        api_backend._today = saved_today
+    assert [c for c in fake.calls if c[1] == MAKEUP] == []
+
+
+def test_makeup_default_off():
+    # 补签是 opt-in：默认（不加 --makeup）即使有断登日+有卡也不补
+    st = default_streak(days=13, balance=2, s7="claimed", s14="locked", s28="locked")
+    cells = [{"date": "2026-09-20", "score": 0}]
+    fake = FakeAPI(state={"checked": True, "travel": {"state": "traveling"},
+                          "streak": st, "cells": cells})
+    setup_module(fake)
+    saved_today = api_backend._today
+    api_backend._today = lambda: FAKE_TODAY
+    try:
         auto_growth.run_via_api(make_args())
     finally:
         api_backend._today = saved_today
     assert [c for c in fake.calls if c[1] == MAKEUP] == []
+
+
+def test_makeup_skips_when_no_launch_date():
+    # 接口未下发 launch_date 时宁可跳过，不用写死日期兜底
+    st = default_streak(days=13, balance=2, s7="claimed", s14="locked", s28="locked")
+    del st["launch_date"]
+    cells = [{"date": "2026-09-20", "score": 0}]
+    fake = FakeAPI(state={"checked": True, "travel": {"state": "traveling"},
+                          "streak": st, "cells": cells})
+    setup_module(fake)
+    saved_today = api_backend._today
+    api_backend._today = lambda: FAKE_TODAY
+    try:
+        res, _ = auto_growth.run_via_api(make_args(makeup=True))
+    finally:
+        api_backend._today = saved_today
+    assert [c for c in fake.calls if c[1] == MAKEUP] == []
+    assert res["streak"] == "ok"  # 安全跳过不算失败
+
+
+def test_streak_makeup_runs_before_redeem():
+    # 顺序契约：补签先于兑换。差 1 天到 14d、1 卡、1 断登日——
+    # 补签后 14d 解锁，必须在同一次运行内被兑掉（月末场景不过夜）。
+    st = default_streak(days=13, balance=1, s7="claimed", s14="locked", s28="locked")
+    cells = [{"date": "2026-09-20", "score": 0}]
+    fake = FakeAPI(state={"checked": True, "travel": {"state": "traveling"},
+                          "streak": st, "cells": cells})
+    setup_module(fake)
+    saved_today = api_backend._today
+    api_backend._today = lambda: FAKE_TODAY
+    try:
+        res, _ = auto_growth.run_via_api(make_args(makeup=True))
+    finally:
+        api_backend._today = saved_today
+    paths = [c[1] for c in fake.calls]
+    assert MAKEUP in paths and REDEEM in paths, paths
+    assert paths.index(MAKEUP) < paths.index(REDEEM), paths
+    redeem_calls = [c for c in fake.calls if c[1] == REDEEM]
+    assert redeem_calls[0][2]["tier"] == "14d", redeem_calls
+    assert res["streak"] == "ok"
 
 
 def test_streak_api_error_reported_as_fail():
@@ -277,6 +342,42 @@ def test_streak_api_error_reported_as_fail():
     res, need = auto_growth.run_via_api(make_args())
     assert res["streak"] == "fail", res
     assert need == set(), need
+
+
+# ---------- 目的地映射与 main() 退出码契约 ----------
+
+def test_destination_maps_to_location_id():
+    # --destination 中文名必须映射到官方 location_id（映射错了此前测不出来）
+    fake = FakeAPI(state={"checked": True, "travel": {"state": "idle"}})
+    setup_module(fake)
+    auto_growth.run_via_api(make_args(destination="古镇客栈"))
+    departs = [c for c in fake.calls if c[1] == TRAVEL_DEPART]
+    assert departs and departs[0][2]["location_id"] == 4, departs
+
+
+def test_main_exit_codes():
+    # 退出码是定时任务告警依赖的对外契约：4=无登录态, 0=全部完成/安全跳过, 5=有失败
+    ag = auto_growth
+    saved_argv, saved_run = sys.argv, ag.run_via_api
+    saved_creds = ag.api_backend.get_credentials
+    try:
+        sys.argv = ["auto_growth.py"]
+        # 无法获取登录态 -> 4
+        ag.api_backend.get_credentials = staticmethod(
+            lambda: (_ for _ in ()).throw(RuntimeError("no login state")))
+        assert ag.main() == 4
+        # 有登录态且全部 ok -> 0
+        ag.api_backend.get_credentials = staticmethod(lambda: ("t", "d"))
+        ag.run_via_api = lambda args, creds=None: (
+            {"checkin": "ok", "travel": "ok", "streak": "ok"}, set())
+        assert ag.main() == 0
+        # 任一步 fail -> 5
+        ag.run_via_api = lambda args, creds=None: ({"checkin": "fail"}, set())
+        assert ag.main() == 5
+    finally:
+        sys.argv = saved_argv
+        ag.run_via_api = saved_run
+        ag.api_backend.get_credentials = saved_creds
 
 
 if __name__ == "__main__":

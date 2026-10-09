@@ -9,7 +9,7 @@ WorkBuddy 桌面客户端，也无需浏览器 (Playwright)：
   1. 每日签到 (POST /v2/billing/meter/daily-checkin, 幂等)
   2. 领取 Buddy 礼物 (Buddy 旅行带回的报告 + 积分)
   3. 派当前展示的 Buddy 去旅行 (选目的地, 确定派出; 仅当 Buddy 处于待派出状态)
-  4. 月历连登奖励 (7/14/28 天里程碑自动兑换 · 自动抽奖 · 限量补签)
+  4. 月历连登奖励 (7/14/28 天里程碑自动兑换 · 自动抽奖; 补签默认关, --makeup 开启)
 
 复用本机已登录的 WorkBuddy 登录态 (AES-256-GCM 信封解密, DPAPI/进程内存),
 直连 https://www.workbuddy.cn 官方接口。
@@ -21,7 +21,8 @@ WorkBuddy 桌面客户端，也无需浏览器 (Playwright)：
     python auto_growth.py --only-claim                      # 只领礼物
     python auto_growth.py --only-travel                     # 只派旅行
     python auto_growth.py --only-checkin                    # 只签到
-    python auto_growth.py --no-redeem --no-lottery --no-makeup  # 关闭连登奖励组
+    python auto_growth.py --no-redeem --no-lottery          # 关闭连登兑换与抽奖
+    python auto_growth.py --makeup                          # 额外开启限量补签(默认关)
 
 依赖: 仅 Python 标准库 (无需 pip install 任何包)。
 """
@@ -89,16 +90,18 @@ def resolve_tasks(args):
     do_gift = (not skip_buddy) and (not args.only_travel)
     do_travel = (not skip_buddy) and (not args.only_claim)
     do_checkin = not skip_checkin
-    # 连登奖励组（默认全开；getattr 兼容测试用的简易 Namespace）
+    # 连登奖励组（兑换/抽奖默认开；补签消耗稀缺补签卡，默认关，需 --makeup 显式开启；
+    # getattr 兼容测试用的简易 Namespace）
     do_redeem = not getattr(args, "no_redeem", False)
     do_lottery = not getattr(args, "no_lottery", False)
-    do_makeup = not getattr(args, "no_makeup", False)
+    do_makeup = getattr(args, "makeup", False)
     return do_checkin, do_gift, do_travel, do_redeem, do_lottery, do_makeup
 
 
-def run_via_api(args):
+def run_via_api(args, creds=None):
     """用官方 API 完成各任务。返回 (results, need_ui)；API-only 模式下 need_ui 恒为空。
-    results 的任务值为 'ok' / 'already' / 'claimed' / 'skipped' / 'fail' 之一。"""
+    results 的任务值为 'ok' / 'already' / 'claimed' / 'skipped' / 'fail' 之一。
+    creds 可传入已获取的 (token, domain)，避免重复解密登录态（进程内存扫描开销大）。"""
     results = {}
     need_ui = set()
     do_checkin, do_gift, do_travel, do_redeem, do_lottery, do_makeup = resolve_tasks(args)
@@ -107,7 +110,7 @@ def run_via_api(args):
         log("[api] API 后端模块缺失（api_backend.py / _vendor_buddy_station.py）。")
         return results, need_ui
     try:
-        token, domain = api_backend.get_credentials()
+        token, domain = creds if creds else api_backend.get_credentials()
     except Exception as e:
         log("[api] 登录态/Token 不可用: %s" % e)
         return results, need_ui
@@ -147,7 +150,11 @@ def main():
                         help="Travel destination (default: 咖啡馆)")
     parser.add_argument("--no-redeem", action="store_true", help="不做连登里程碑自动兑换 (7/14/28天)")
     parser.add_argument("--no-lottery", action="store_true", help="不做连登奖励自动抽奖")
-    parser.add_argument("--no-makeup", action="store_true", help="不做自动补签（默认按需限量使用补签卡）")
+    parser.add_argument("--makeup", action="store_true",
+                        help="开启自动补签（消耗稀缺的补签卡，默认关闭；按需限量使用，绝不超花）")
+    # 兼容旧命令：--no-makeup 曾是默认开时的关闭开关，现默认即关，保留仅为不炸旧脚本
+    parser.add_argument("--no-makeup", action="store_true", help=argparse.SUPPRESS)
+    # --backend 只剩 api 一个选项，保留是为了兼容既有定时任务命令行里的 "--backend api"
     parser.add_argument("--backend", choices=["api"], default="api",
                         help="执行后端: api(仅API, 默认)")
     args = parser.parse_args()
@@ -156,12 +163,12 @@ def main():
         log("ERROR: API 后端模块缺失（api_backend.py / _vendor_buddy_station.py）。")
         return 4
     try:
-        _tok, _dom = api_backend.get_credentials()
+        creds = api_backend.get_credentials()
     except Exception as e:
         log("[api] 无法获取本机登录态: %s" % e)
         return 4
 
-    _res, _need = run_via_api(args)
+    _res, _need = run_via_api(args, creds=creds)
     _code = 5 if ("fail" in (_res.get("checkin", ""), _res.get("travel", ""), _res.get("streak", ""))) else 0
     log("Done (API only). Exit code %d." % _code)
     return _code

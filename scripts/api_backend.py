@@ -6,11 +6,10 @@ totorosir-workbuddy-score v3.1.2（MIT-0，已获公共领域 dedication），�
 Skill 的「API 优先」后端。重活（AES-256-GCM 信封解密、Windows DPAPI /
 进程内存密钥发现）都在 _vendor_buddy_station.py（逐字节照搬、不手改，
 需要更新时整体重新搬运）。本文件只做薄封装，把社区能力收敛成我们
-需要的 3 个动作：签到、领旅行奖励、派 Buddy 旅行。
+需要的动作：签到、领旅行奖励、派 Buddy 旅行、连登兑换 / 抽奖 / 补签。
 
-触发回退：当取不到 token / 鉴权失败 / 接口异常时，调用方（auto_growth.py）
-会回退到 UI（Playwright）方案。因此本模块只负责「能成功就成功，不能就
-如实返回失败」，不自行兜底。
+本模块为唯一执行路径（API-only）：能成功就成功，不能就如实返回失败
+（'fail'），由调用方以退出码 5 暴露；不存在也不回退到任何 UI 方案。
 """
 from __future__ import annotations
 
@@ -176,6 +175,7 @@ def api_makeup(token):
     """自动补签：仅当仍有 locked 档位且补签可促成时，用补签卡填当月断登日。
 
     消耗稀缺资源，默认按「刚好够到下一档」限量使用，绝不超花。
+    （本函数默认不被调用——补签是 opt-in，见 auto_growth.py 的 --makeup。）
     """
     try:
         data = get_streak(token)
@@ -191,8 +191,10 @@ def api_makeup(token):
         balance = (data.get("makeup_cards") or {}).get("balance") or 0
         if balance <= 0:
             return {"outcome": "ok", "message": "补签: 无补签卡，跳过", "used": 0}
-        # 找断登日
-        launch = data.get("launch_date") or "2026-06-17"
+        # 找断登日。launch_date 由接口下发；缺失时宁可跳过，不用写死的日期兜底。
+        launch = data.get("launch_date")
+        if not launch:
+            return {"outcome": "ok", "message": "补签: 接口未返回 launch_date，安全跳过", "used": 0}
         made = set(streak.get("makeup_dates") or [])
         today = _today()
         month = today.strftime("%Y-%m")
@@ -226,15 +228,21 @@ def api_makeup(token):
         return {"outcome": "fail", "message": "补签: %s" % exc, "used": 0}
 
 
-def api_streak_all(token, do_redeem=True, do_lottery=True, do_makeup=True):
-    """连登奖励总入口：兑换 -> 抽奖 -> 补签。任一子任务失败则整体 outcome=fail。"""
+def api_streak_all(token, do_redeem=True, do_lottery=True, do_makeup=False):
+    """连登奖励总入口：补签 -> 兑换 -> 抽奖。任一子任务失败则整体 outcome=fail。
+
+    顺序有讲究：补签（消耗补签卡填断登日、提升连登天数）可能把 locked 档位
+    变成 available，必须最先执行，紧随其后兑换才能把刚解锁的档位当月兑掉；
+    若先兑后补，补签解锁的档位只能等下一次运行——逢月末即错过该月奖励。
+    补签消耗稀缺资源，默认关闭（do_makeup=False，由 --makeup 显式开启）。
+    """
     subs = []
+    if do_makeup:
+        subs.append(api_makeup(token))
     if do_redeem:
         subs.append(api_redeem(token))
     if do_lottery:
         subs.append(api_lottery(token))
-    if do_makeup:
-        subs.append(api_makeup(token))
     if not subs:
         return {"outcome": "ok", "message": "连登任务全部关闭"}
     failed = any(s["outcome"] == "fail" for s in subs)

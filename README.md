@@ -1,45 +1,51 @@
 # WorkBuddy 成长计划一站式自动化（workbuddy-auto-checkin）
 
-> 一个跨平台、零硬编码的 WorkBuddy Skill：**不启动 WorkBuddy 桌面客户端**，
+> 一个零硬编码的 WorkBuddy Skill：**不启动 WorkBuddy 桌面客户端**，
 > 把成长计划页的一整套操作做成一个 Skill —— **每日签到**、
-> **领取 Buddy 礼物**、**月历连登奖励（7/14/28 天里程碑自动兑换·抽奖·补签）**，
+> **领取 Buddy 礼物**、**月历连登奖励（7/14/28 天里程碑自动兑换·抽奖·可选补签）**，
 > 以及**派当前展示的 Buddy 去旅行**（可选/尽力）。
 > 全程走 **API-only** 方案（直连官方 REST 接口，只需要 Python 标准库，**无需浏览器、无需 Playwright**）。
 > 复用你本机 `www.workbuddy.cn` 的登录态（AES-256-GCM 信封解密），无需手动提取 token。
+>
+> ⚠️ **平台**：登录态解密依赖 Windows DPAPI / 进程内存读取，**当前仅支持 Windows**（macOS / Linux 暂不支持，见「原理」）。
 >
 > ⚠️ **关于「派 Buddy 去旅行」**：Buddy 旅行是你**每天在客户端手动派出**的（并非自动出行），
 > 脚本只会在「Buddy 在家、待派出」的短暂窗口**尽力尝试**派发；找不到出发状态或接口未开放时**安全跳过（exit 0）**，
 > 绝不伪造派发成功。因此旅行只是**可选附属能力**，不是核心自动化项。
 
-**English summary:** A single cross-platform, zero-hardcoded WorkBuddy skill that
-auto-runs the whole growth-center routine in the background — daily check-in
-credits, claim the Buddy gift, dispatch the Buddy on a trip, and the monthly
-login-streak rewards (redeem / lottery / makeup) — without launching the
-WorkBuddy desktop client. It runs **API-only** (official REST endpoints,
-stdlib-only, no browser, no Playwright). It reuses your local `workbuddy.cn`
-login state (AES-256-GCM envelope decryption), no manual token extraction.
+**English summary:** A single zero-hardcoded WorkBuddy skill that auto-runs the
+whole growth-center routine in the background — daily check-in credits, claim
+the Buddy gift, dispatch the Buddy on a trip, and the monthly login-streak
+rewards (redeem / lottery / optional makeup) — without launching the WorkBuddy
+desktop client. It runs **API-only** (official REST endpoints, stdlib-only, no
+browser, no Playwright). It reuses your local login state (AES-256-GCM envelope
+decryption), no manual token extraction. **Windows only** (token decryption
+relies on DPAPI / process-memory key discovery).
 
 ---
 
 ## ✨ 特性
 
-- **一个 Skill 完成全部**：签到 + 领礼物 + 连登奖励（兑换/抽奖/补签）+ 派旅行（可选/尽力），统一入口 `auto_growth.py`，可整体跑也可按需 `--skip-*` / `--only-*` / `--no-*` 拆分。
+- **一个 Skill 完成全部**：签到 + 领礼物 + 连登奖励（兑换/抽奖/可选补签）+ 派旅行（可选/尽力），统一入口 `auto_growth.py`，可整体跑也可按需 `--skip-*` / `--only-*` / `--no-*` 拆分。
 - **纯 API，零浏览器依赖（默认且唯一）**：直连官方 REST 接口（仅 Python 标准库），不走 Playwright/UI 文案匹配，官方改页面文案也不受影响。
 - **零硬编码**：不写死用户名、路径、浏览器、宠物名。从接口读取当前 Buddy，换号也能用。
-- **依赖缺失不崩**：缺 `api_backend.py` 等模块会给出明确提示后退出，而不是静默失败。
+- **依赖缺失不崩**：缺 `api_backend.py` 等模块会给出明确提示后退出（退出码 4），而不是静默失败。
 - **优雅降级**：活动未开启 / 今日已领 / 已领过礼物 / 已在旅行 / 未登录 / API 不可用，全部安全跳过并写日志（退出码 0/4）。
-- **跨平台调度**：内置 Windows 任务计划、macOS launchd、Linux cron 三种挂法；支持 `pythonw` 无窗口后台。
+- **可定时后台运行**：附 Windows 任务计划示例（`pythonw` 无窗口后台）；当前仅支持 Windows。
 - **可复用**：直接作为 WorkBuddy Skill 复制到 `~/.workbuddy/skills/` 使用，或独立 Python 脚本运行。
 
 - **连登奖励全自动（2026-09 新增，API-only）**：月历连登 7/14/28 天里程碑——
   自动兑换所有已达成的档位（`POST /activity/growth/redeem`，幂等 client_token）、
-  自动抽掉可用抽奖次数、按需限量使用补签卡补当月断登日（只补到「刚好够到下一个未达成档」，
-  绝不超花）。`--no-redeem` / `--no-lottery` / `--no-makeup` 可分别关闭。
+  自动抽掉可用抽奖次数；**补签默认关闭**（补签卡是稀缺资源），加 `--makeup` 才会
+  按需限量补当月断登日（只补到「刚好够到下一个未达成档」，绝不超花，且在兑换之前执行，
+  保证当月解锁的档位当月兑掉）。`--no-redeem` / `--no-lottery` 可分别关闭兑换与抽奖。
   端点契约详见 `references/api_notes.md`。
 
 ## ⚙️ 原理
 
-**纯 API（无需浏览器）**：`scripts/api_backend.py` 直接调用 WorkBuddy 官方 REST 接口完成所有任务——每日签到、领旅行奖励、派 Buddy 旅行、连登兑换/抽奖/补签。它从本机 `workbuddy-desktop.info` 读取 `accessToken` 并解密（WorkBuddy 3.1.0 起该字段是 **AES-256-GCM 信封**而非明文 JWT，解密密钥经 Windows DPAPI 或扫描运行中的 `WorkBuddy.exe` 进程内存获得）；这部分"重活"逐字节搬运自社区技能 **totorosir-workbuddy-score v3.1.2（MIT-0）**，放在 `scripts/_vendor_buddy_station.py`，不手改。该路径**仅依赖 Python 标准库**。
+**纯 API（无需浏览器）**：`scripts/api_backend.py` 直接调用 WorkBuddy 官方 REST 接口完成所有任务——每日签到、领旅行奖励、派 Buddy 旅行、连登兑换/抽奖/补签。它从本机 `workbuddy-desktop.info` 读取 `accessToken` 并解密（WorkBuddy 3.1.0 起该字段是 **AES-256-GCM 信封**而非明文 JWT，解密密钥经 Windows DPAPI 或扫描运行中的 `WorkBuddy.exe` 进程内存获得——**因此当前仅支持 Windows**）；这部分"重活"逐字节搬运自社区技能 **totorosir-workbuddy-score v3.1.2（MIT-0）**，放在 `scripts/_vendor_buddy_station.py`，不手改。该路径**仅依赖 Python 标准库**。
+
+> 登录态实测（2026-10-09，Windows）：文件位于 `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`（CodeBuddy 与 WorkBuddy 同源共用该扩展宿主目录，属正常），登录态内 `domain` 字段官方签发为 `www.codebuddy.cn`，签到接口在该域可用——`www.codebuddy.cn` 与 `www.workbuddy.cn` 后端同源，token 通用。脚本按登录态内的 `domain` 字段直连，不写死域名。
 
 1. 每日签到有**专门的领取动作**，不会登录即自动到账。API 路径核心接口：`POST /v2/billing/meter/checkin-activity-status`（读状态）、`POST /v2/billing/meter/daily-checkin`（幂等领取，`code 10001` = 今日已签）。
 2. Buddy「领取礼物 / 派去旅行」：API 旅行走 `www.workbuddy.cn`（无 `/v2`）：`travel/status`、`travel/depart`、`travel/claim`。脚本按 `DEST_ID` 映射选目的地（与官方 4 个地点一致），不写死宠物名。
@@ -78,11 +84,14 @@ python scripts/auto_growth.py --skip-checkin
 # 只签到
 python scripts/auto_growth.py --only-checkin
 
-# 关闭连登奖励组
-python scripts/auto_growth.py --no-redeem --no-lottery --no-makeup
+# 关闭连登兑换与抽奖
+python scripts/auto_growth.py --no-redeem --no-lottery
+
+# 额外开启限量补签（消耗补签卡，默认关闭）
+python scripts/auto_growth.py --makeup
 ```
 
-**前提**：只需要本机装了 WorkBuddy 桌面端（含登录态文件 `workbuddy-desktop.info`）且已登录，
+**前提**：本机为 **Windows**，装有 WorkBuddy 桌面端（含登录态文件 `workbuddy-desktop.info`）且已登录，
 脚本自动读 token，**无需浏览器、无需 pip install 任何包**。
 
 ### 退出码（供定时任务判断是否需要告警）
@@ -105,13 +114,8 @@ schtasks /create /tn "WorkBuddy成长计划" ^
   /sc daily /st 09:00 /rl limited
 ```
 
-**macOS — launchd**（建一个 plist，`StartCalendarInterval` 设 Hour=9，ProgramArguments 指向脚本）。
-
-**Linux — cron：**
-
-```cron
-0 9 * * * /usr/bin/python3 /path/to/scripts/auto_growth.py >> /path/to/growth.log 2>&1
-```
+> macOS / Linux 暂不支持：登录态信封解密依赖 Windows DPAPI 与 `WorkBuddy.exe` 进程内存读取。
+> 若官方未来提供 macOS/Linux 的密钥派生途径，欢迎 PR。
 
 ## 🛡️ 排坑清单
 
@@ -125,7 +129,7 @@ schtasks /create /tn "WorkBuddy成长计划" ^
 
 ```bash
 python tests/test_api_backend.py
-# => 15 passed, 0 failed
+# => 20 passed, 0 failed
 ```
 
 ## 📤 发布到 GitHub
