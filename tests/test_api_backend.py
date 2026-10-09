@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Unit tests for the API-first backend and the auto/UI fallback decision.
+"""Unit tests for the API-only backend (no browser, no UI fallback).
 
 These tests never touch the network or the real WorkBuddy account: the
 vendor REST call (``_vendor_buddy_station.api_call``) is monkey-patched with
@@ -8,10 +8,11 @@ return a fake token. We verify:
 
   1) api_checkin / api_travel succeed on normal responses.
   2) idempotent "already done" states are reported as success (not failure).
-  3) genuine API errors are reported as 'fail' so the caller can fall back.
-  4) run_via_api() returns the correct need_ui set (which tasks must be
-     retried via UI) for every combination above, plus the
-     "no credentials" and "no api_backend module" cases.
+  3) genuine API errors are reported as 'fail' (the caller surfaces them via
+     exit code 5; there is no UI fallback layer).
+  4) run_via_api() always returns an empty need_ui set — the API-only design
+     has nothing to fall back to, so failed tasks are simply recorded as
+     'fail' in results and surfaced by the caller.
 """
 import argparse
 import sys
@@ -108,7 +109,7 @@ class FakeAPI:
         return 200, {"code": 0, "data": {}}
 
 
-def setup_module(fake, creds=("fake-token", "www.codebuddy.cn")):
+def setup_module(fake, creds=("fake-token", "www.workbuddy.cn")):
     V.api_call = fake
     auto_growth.api_backend.get_credentials = staticmethod(lambda: creds)
 
@@ -131,24 +132,24 @@ def test_already_done_is_success():
     assert need == set()
 
 
-def test_checkin_api_error_triggers_ui_fallback():
-    # daily-checkin POST raises -> checkin fails -> must fall back to UI
+def test_checkin_api_error_reported_as_fail():
+    # daily-checkin POST raises -> checkin fails -> recorded as 'fail' (no UI fallback)
     fake = FakeAPI(state={"checked": False, "travel": {"state": "idle"}},
                    raise_on={CHEEKIN_DO})
     setup_module(fake)
     res, need = auto_growth.run_via_api(make_args())
     assert res["checkin"] == "fail"
-    assert "checkin" in need, need
+    assert need == set(), need
 
 
-def test_travel_status_error_triggers_ui_fallback():
-    # travel/status fetch fails -> travel fails -> gift+travel fall back to UI
+def test_travel_status_error_reported_as_fail():
+    # travel/status fetch fails -> travel fails -> recorded as 'fail' (no UI fallback)
     fake = FakeAPI(state={"checked": True, "travel": {"state": "arrived"}},
                    raise_on={TRAVEL_STATUS})
     setup_module(fake)
     res, need = auto_growth.run_via_api(make_args())
     assert res["travel"] == "fail"
-    assert "gift" in need and "travel" in need, need
+    assert need == set(), need
 
 
 def test_only_travel_defers_claim():
@@ -161,23 +162,25 @@ def test_only_travel_defers_claim():
     assert res["travel"] == "ok"
 
 
-def test_no_credentials_falls_back_everything():
+def test_no_credentials_returns_empty():
     fake = FakeAPI()
     setup_module(fake, creds=None)  # get_credentials raises
     auto_growth.api_backend.get_credentials = staticmethod(
         lambda: (_ for _ in ()).throw(RuntimeError("no login state")))
     res, need = auto_growth.run_via_api(make_args())
-    assert need == {"checkin", "gift", "travel"}, need
+    # API-only: nothing to fall back to; the caller (main) surfaces via exit code 4
+    assert need == set(), need
+    assert res == {}, res
 
 
-def test_missing_api_backend_module_falls_back_everything():
+def test_missing_api_backend_module_returns_empty():
     fake = FakeAPI()
     setup_module(fake)
     saved = auto_growth.api_backend
     try:
         auto_growth.api_backend = None
         res, need = auto_growth.run_via_api(make_args())
-        assert need == {"checkin", "gift", "travel"}, need
+        assert need == set(), need
     finally:
         auto_growth.api_backend = saved
 
@@ -266,14 +269,14 @@ def test_makeup_skips_when_all_tiers_claimed():
     assert [c for c in fake.calls if c[1] == MAKEUP] == []
 
 
-def test_streak_api_error_reported_without_ui_fallback():
-    # streak 读取失败 → streak 组 fail，但 UI 无法补做 → 不得进 need_ui
+def test_streak_api_error_reported_as_fail():
+    # streak 读取失败 → streak 组 fail，无 UI 可补做 → need_ui 恒为空
     fake = FakeAPI(state={"checked": False, "travel": {"state": "idle"}},
                    raise_on={CHEEKIN_DO, STREAK})
     setup_module(fake)
     res, need = auto_growth.run_via_api(make_args())
     assert res["streak"] == "fail", res
-    assert need == {"checkin"}, need  # checkin fail 回退 UI；streak 不回退
+    assert need == set(), need
 
 
 if __name__ == "__main__":

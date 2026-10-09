@@ -1,16 +1,20 @@
 # API & Endpoint Notes (observed, for debugging only)
 
+> ⚠️ **历史记录（2026-10-09 前）**：本文档中「UI 回退 / Playwright / 点击页面按钮」相关描述
+> 已随 UI 回退层移除而失效。当前技能为 **纯 API 实现**（`scripts/auto_growth.py` 不再含任何
+> 浏览器代码），以下端点契约仍有效，但「点击按钮 / UI fallback」字样均为历史。
+
 These were captured live from the WorkBuddy web app via the browser network
 panel and in-page `fetch`. They are **not** a stable public contract — front-end
-routes can change. Prefer clicking the UI button over hardcoding URLs; this
-document exists only to help debug.
+routes can change. The skill now calls the official REST endpoints directly
+(API-only); this document exists only to help debug the endpoint contracts.
 
 All requests go to the same origin `https://www.workbuddy.cn` and rely on the
 same-site session cookie. No separate Bearer token was observed.
 
 ---
 
-## API backend (the default `--backend auto` path)
+## API backend (the API-only path)
 
 The bundled API backend in `scripts/api_backend.py` (thin wrapper over the
 vendored `scripts/_vendor_buddy_station.py`, from community skill
